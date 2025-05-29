@@ -318,7 +318,7 @@ def task(ctx, config):
  
             # LEE proof of concept experiment
             log.info('LEE: timed out - closing stding')
-            for proc in tests.values()
+            for proc in tests.values():
                 proc.stdin.close()
             log.info('LEE: after stdin close')
             run.wait(tests.values())
