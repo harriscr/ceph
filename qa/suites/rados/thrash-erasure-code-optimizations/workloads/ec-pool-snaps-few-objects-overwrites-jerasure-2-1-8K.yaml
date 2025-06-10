@@ -10,9 +10,18 @@ tasks:
     clients: [client.0]
     ops: 4000
     objects: 50
+    pool_snaps: true
     ec_pool: true
     erasure_code_use_overwrites: true
     erasure_code_use_optimizations: true
+    erasure_code_profile:
+      name: jerasure21profile
+      plugin: jerasure
+      k: 2
+      m: 1
+      technique: reed_sol_van
+      crush-failure-domain: osd    
+      stripe_unit: 8K
     op_weights:
       read: 100
       write: 100

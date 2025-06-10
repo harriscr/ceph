@@ -16,7 +16,14 @@ tasks:
     ec_pool: true
     erasure_code_use_overwrites: true
     erasure_code_use_optimizations: true
-    fast_read: true
+    erasure_code_profile:
+      name: jerasure64profile
+      plugin: jerasure
+      k: 6
+      m: 4
+      technique: reed_sol_van
+      crush-failure-domain: osd
+      stripe_unit: 64K
     op_weights:
       read: 100
       write: 100

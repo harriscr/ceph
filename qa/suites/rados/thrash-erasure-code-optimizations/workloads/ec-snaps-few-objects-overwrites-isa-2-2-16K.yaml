@@ -10,10 +10,17 @@ tasks:
     clients: [client.0]
     ops: 4000
     objects: 50
-    pool_snaps: true
     ec_pool: true
     erasure_code_use_overwrites: true
     erasure_code_use_optimizations: true
+    erasure_code_profile:
+      name: isa22profile
+      plugin: isa
+      k: 2
+      m: 2
+      technique: reed_sol_van
+      crush-failure-domain: osd
+      stripe_unit: 16K
     op_weights:
       read: 100
       write: 100
