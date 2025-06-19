@@ -8,6 +8,7 @@ import logging
 import gevent
 from gevent.greenlet import Greenlet
 
+from tasks.thrasher import Thrasher
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
 from teuthology.orchestra import run
