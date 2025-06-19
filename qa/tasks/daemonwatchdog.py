@@ -90,24 +90,16 @@ class DaemonWatchdog(Greenlet):
             )
         )
 
-        for thrasher in self.thrashers:
-            if thrasher.exception is not None:
-                self.log("{name} failed".format(name=thrasher.name))
-                thrasher.stop_and_join()
-
         for daemon in daemons:
             try:
                 daemon.signal(signal.SIGTERM)
             except:
                 self.logger.exception("ignoring exception:")
 
+        self.log("List of thrashers to kill is %s", self.thrashers)
         for thrasher in self.thrashers:
             self.log("Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
-
-        for barker in self.canines:
-            self.log("Killing running process {name}".format(name=canine.name))
-            barker.woof()
 
     def watch(self):
         self.log("watchdog starting")
