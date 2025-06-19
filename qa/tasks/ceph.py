@@ -523,10 +523,10 @@ def cephfs_setup(ctx, config):
 def watchdog_setup(ctx, config):
     ctx.ceph[config["cluster"]].thrashers = []
     ctx.ceph[config["cluster"]].canines = []
+    log.info("CHDEBUG: About to setup WatchDog")
     ctx.ceph[config["cluster"]].watchdog = DaemonWatchdog(
         ctx,
         config,
-        ctx.ceph[config["cluster"]].thrashers,
     )
     ctx.ceph[config["cluster"]].watchdog.start()
     yield

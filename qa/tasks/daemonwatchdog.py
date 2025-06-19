@@ -37,6 +37,7 @@ class DaemonWatchdog(Greenlet):
         self.name = "watchdog"
         self.stopping = Event()
         self.thrashers = ctx.ceph[config["cluster"]].thrashers
+        log.info("CHDEBUG: Initing watchdog with thrshers: %s" % self.thrashers)
 
     def _run(self):
         try:

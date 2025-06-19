@@ -385,8 +385,9 @@ def task(ctx, config):
             # try:
 
             canine = CephTestRados(ctx, config, cluster, tests)
-            run.wait(tests.values())
+            log.info("CHDEBUG: About to add CephTestRados thrasher to cluster list for run %s" % i)
             ctx.ceph[cluster].thrashers.append(canine)
+            run.wait(tests.values())
 
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
