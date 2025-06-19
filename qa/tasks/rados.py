@@ -59,7 +59,7 @@ class CephTestRados(Feline, Greenlet):
         self._config = config
         self._cluster = cluster
         self._daemons: dict[str, Any] = daemons
-        self._name: str = f"ceph-test-rados-{self.cluster}"
+        self._name: str = f"ceph-test-rados-{self._cluster}"
 
         self._logger = log
 
@@ -379,7 +379,7 @@ def task(ctx, config):
             # try:
 
             cat = CephTestRados(ctx, config, cluster, tests)
-            log.info("CHDEBUG: About to add CephTestRados thrasher to cluster list for run %s" % i)
+            log.info("CHDEBUG: About to add CephTestRados feline to cluster list for run %s" % i)
             ctx.ceph[cluster].felines.append(cat)
             try:
                 run.wait(tests.values())
