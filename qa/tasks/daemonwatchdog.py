@@ -148,7 +148,7 @@ class DaemonWatchdog(Greenlet):
                     thrasher.stop_and_join()
                     bark = True
 
-            if time.time() - start_time >= 60:
+            if time.time() - start_time >= 600:
                 bark = True
 
             if bark:
