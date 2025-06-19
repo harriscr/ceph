@@ -212,7 +212,7 @@ def task(ctx, config):
     finally:
         log.info('joining rbd_mirror_thrash')
         thrasher.stop()
-        if thrasher.exception is not None:
+        if thrasher.exce ption is not None:
             raise RuntimeError('error during thrashing')
         thrasher.join()
         log.info('done joining')
