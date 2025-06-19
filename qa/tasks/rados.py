@@ -27,11 +27,13 @@ class Canine(Greenlet, ABC):
     @property
     @abstractmethod
     def name(self) -> str:
+        """
+        The name of the test
+        """
 
     @property
     def exeption(self) -> Exception:
         return self._exception
-
 
     def woof(self) -> None:
         log.warning("CHDEBUG - we have been told to bark")
@@ -61,9 +63,6 @@ class CephTestRados(Canine, Greenlet):
             log.info("CHDEBUG: Stopping instance %s", test_id)
             daemon.stdin.close()
             # daemon.stdin.close()
-        
-
-    
 
     # def join(self):
     #    log.info("CHDEBUG: Joining the test")
@@ -373,17 +372,16 @@ def task(ctx, config):
 
                 tests[id_] = proc
 
-            
             # LEE proof of concept experiment
-            #try:
+            # try:
 
             canine = CephTestRados(ctx, cluster, tests)
             run(tests.values())
             ctx.ceph[cluster].canines.append(canine)
-            
-            #except MaxWhileTries as e:
+
+            # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
-                # LEE proof of concept experiment
+            # LEE proof of concept experiment
             #    log.info("LEE: timed out - closing stdin")
             #    canine.set_exception(e)
 
@@ -398,8 +396,6 @@ def task(ctx, config):
             for pool in created_pools:
                 manager.wait_snap_trimming_complete(pool)
             manager.remove_pool(pool)
-
-        
 
     running = gevent.spawn(thread)
 
