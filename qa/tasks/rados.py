@@ -15,6 +15,27 @@ from teuthology.orchestra import run
 log = logging.getLogger(__name__)
 
 
+class CephTestRados(Thrasher, Greenlet):
+    def __init__(self, ctx, config, cluster, daemons):
+        super(CephTestRados, self).__init__()
+
+        self.ctx = ctx
+        self.config = config
+        self.cluster = cluster
+        self.daemons = daemons
+
+        self.logger = log
+
+    def stop(self):
+        log.info("CHDEBUG: Stopping the test")
+        for daemon in self.daemons:
+            daemon.stdin.close()
+
+    def join(self):
+        log.info("CHDEBUG: Joining the test")
+        pass
+
+
 @contextlib.contextmanager
 def task(ctx, config):
     """
