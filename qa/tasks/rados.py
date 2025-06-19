@@ -29,7 +29,8 @@ class CephTestRados(Thrasher, Greenlet):
 
     def stop(self):
         log.info("CHDEBUG: Stopping the test")
-        for daemon in self.daemons:
+        for test_id, daemon in self.daemons.items():
+            log.info("CHDEBUG: Stopping instance %s", test_id)
             daemon.stdin.close()
 
     def join(self):
