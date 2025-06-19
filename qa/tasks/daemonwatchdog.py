@@ -27,7 +27,7 @@ class DaemonWatchdog(Greenlet):
                                               watchdog will bark.
     """
 
-    def __init__(self, ctx, config, thrashers, canines):
+    def __init__(self, ctx, config):
         super(DaemonWatchdog, self).__init__()
         self.config = ctx.config.get("watchdog", {})
         self.ctx = ctx
@@ -36,8 +36,7 @@ class DaemonWatchdog(Greenlet):
         self.cluster = config.get("cluster", "ceph")
         self.name = "watchdog"
         self.stopping = Event()
-        self.thrashers = thrashers
-        self.canines = canines
+        self.thrashers = ctx.ceph[config["cluster"]].thrashers
 
     def _run(self):
         try:

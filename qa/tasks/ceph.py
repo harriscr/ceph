@@ -524,7 +524,9 @@ def watchdog_setup(ctx, config):
     ctx.ceph[config["cluster"]].thrashers = []
     ctx.ceph[config["cluster"]].canines = []
     ctx.ceph[config["cluster"]].watchdog = DaemonWatchdog(
-        ctx, config, ctx.ceph[config["cluster"]].thrashers, ctx.ceph[config["cluster"]].canines
+        ctx,
+        config,
+        ctx.ceph[config["cluster"]].thrashers,
     )
     ctx.ceph[config["cluster"]].watchdog.start()
     yield
