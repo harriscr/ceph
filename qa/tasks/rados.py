@@ -395,6 +395,7 @@ def task(ctx, config):
                 cat.set_exception(e)
 
             if cat.exception:
+                log.info("CHDEBUG: exception so raising")
                 raise cat.exception
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
