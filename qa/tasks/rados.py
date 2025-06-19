@@ -373,16 +373,19 @@ def task(ctx, config):
 
                 tests[id_] = proc
 
-            canine = CephTestRados(ctx, cluster, tests)
-            ctx.ceph[cluster].canines.append(canine)
+            
             # LEE proof of concept experiment
-            try:
-                run.wait(tests.values(), 5400)
-            except MaxWhileTries as e:
-                log.info("LEE: %s", e.args)
+            #try:
+
+            canine = CephTestRados(ctx, cluster, tests)
+            run(tests.values())
+            ctx.ceph[cluster].canines.append(canine)
+            
+            #except MaxWhileTries as e:
+            #    log.info("LEE: %s", e.args)
                 # LEE proof of concept experiment
-                log.info("LEE: timed out - closing stdin")
-                canine.set_exception(e)
+            #    log.info("LEE: timed out - closing stdin")
+            #    canine.set_exception(e)
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.
@@ -395,6 +398,8 @@ def task(ctx, config):
             for pool in created_pools:
                 manager.wait_snap_trimming_complete(pool)
             manager.remove_pool(pool)
+
+        
 
     running = gevent.spawn(thread)
 
