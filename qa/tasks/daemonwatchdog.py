@@ -99,17 +99,17 @@ class DaemonWatchdog(Greenlet):
             except:
                 self.logger.exception("ignoring exception:")
 
-        self.log(f"CHDEBUG: List of thrashers to kill is {self.thrashers}")
-        for thrasher in self.thrashers:
-            self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
-            thrasher.stop_and_join()
-            raise thrasher.exception
-
         self.log(f"CHDEBUG: List of cats to kill is {self.cats}")
         for cat in self.cats:
             self.log(f"CHDEBUG: Killing cat {cat.collar}")
             cat.stop()
-            raise cat.exception
+            # raise cat.exception
+
+        self.log(f"CHDEBUG: List of thrashers to kill is {self.thrashers}")
+        for thrasher in self.thrashers:
+            self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
+            thrasher.stop_and_join()
+            # raise thrasher.exception
 
     def watch(self):
         self.log("watchdog starting")
