@@ -415,8 +415,6 @@ def task(ctx, config):
 
     try:
         yield
-    except Exception:
-        log.info("CHDEBUG: Running process threw an exception - Ignoring for now")
     finally:
         log.info("joining rados")
         running.get()
