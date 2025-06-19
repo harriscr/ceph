@@ -120,6 +120,7 @@ class DaemonWatchdog(Greenlet):
             self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
 
+        self.log("CHDEBUG: Raising exception")
         if self._exception:
             raise WoofError(reason) from self._exception
         else:
