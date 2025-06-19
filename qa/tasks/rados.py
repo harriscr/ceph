@@ -41,7 +41,7 @@ class CephTestRados(Feline, Greenlet):
         self._logger.info(message)
 
     def stop(self) -> None:
-        debug: str = f"CHDEBUG: stopping {self.name}"
+        debug: str = f"CHDEBUG: stopping {self._name}"
         if self._exception:
             debug += f" due to exception {self._exception}"
         log.info(debug)

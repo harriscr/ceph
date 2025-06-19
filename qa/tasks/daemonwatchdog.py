@@ -111,7 +111,6 @@ class DaemonWatchdog(Greenlet):
             except:
                 self.logger.exception("ignoring exception:")
 
-        self.log(f"CHDEBUG: List of cats to kill is {self.cats}")
         for cat in self.cats:
             self.log(f"CHDEBUG: Killing cat {cat.collar}")
             cat.set_exception(WoofError(reason))
