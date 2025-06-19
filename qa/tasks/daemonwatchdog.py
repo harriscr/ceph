@@ -71,7 +71,7 @@ class DaemonWatchdog(Greenlet):
         self.stopping.set()
 
     def bark(self, reason: str):
-        self.log("BARK! unmounting mounts and killing all daemons")
+        self.log("BARK! %s. unmounting mounts and killing all daemon" % reason)
         if hasattr(self.ctx, "mounts"):
             for mount in self.ctx.mounts.values():
                 try:
