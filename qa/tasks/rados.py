@@ -9,38 +9,10 @@ import gevent
 
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
-
 from teuthology.orchestra import run
 
 log = logging.getLogger(__name__)
 
-
-class CephTestRados(Thrasher, Greenlet):
-
-    def __init__(self, ctx, config, cluster, tests):
-        self.ctx = ctx
-        self.config = config
-        self._cluster = cluster
-
-        self.tests = tests
-
-    def stop():
-        for proc in tests.values()
-            proc.stdin.close()
-
-
-class CephTestRados(Thrasher, Greenlet):
-
-    def __init__(self, ctx, config, cluster, tests):
-        self.ctx = ctx
-        self.config = config
-        self._cluster = cluster
-
-        self.tests = tests
-
-    def stop():
-        for proc in tests.values()
-            proc.stdin.close()
 
 @contextlib.contextmanager
 def task(ctx, config):
@@ -175,49 +147,59 @@ def task(ctx, config):
     pct_update_delay = None
     # LEE - added daemon helper here
     args = [
-        'adjust-ulimits',
-        'ceph-coverage',
-        '{tdir}/archive/coverage'.format(tdir=testdir),
-        'daemon-helper',
-        'kill',
-        'ceph_test_rados']
+        "adjust-ulimits",
+        "ceph-coverage",
+        "{tdir}/archive/coverage".format(tdir=testdir),
+        "daemon-helper",
+        "kill",
+        "ceph_test_rados",
+    ]
 
-    if config.get('ec_pool', False):
-        args.extend(['--no-omap'])
-        if not config.get('erasure_code_use_overwrites', False):
-            args.extend(['--ec-pool'])
-    if config.get('write_fadvise_dontneed', False):
-        args.extend(['--write-fadvise-dontneed'])
-    if config.get('set_redirect', False):
-        args.extend(['--set_redirect'])
-    if config.get('set_chunk', False):
-        args.extend(['--set_chunk'])
-    if config.get('enable_dedup', False):
-        args.extend(['--enable_dedup'])
-    if config.get('low_tier_pool', None):
-        args.extend(['--low_tier_pool', config.get('low_tier_pool', None)])
-    if config.get('dedup_chunk_size', False):
-        args.extend(['--dedup_chunk_size', config.get('dedup_chunk_size', None)] )
-    if config.get('dedup_chunk_algo', False):
-        args.extend(['--dedup_chunk_algo', config.get('dedup_chunk_algo', None)])
-    if config.get('pool_snaps', False):
-        args.extend(['--pool-snaps'])
-    if config.get('balance_reads', False):
-        args.extend(['--balance-reads'])
-        pct_update_delay = config.get('pct_update_delay', 5);
-    if config.get('localize_reads', False):
-        args.extend(['--localize-reads'])
-    if config.get('max_attr_len', None):
-        args.extend(['--max-attr-len', str(config.get('max_attr_len'))])
-    args.extend([
-        '--max-ops', str(config.get('ops', 10000)),
-        '--objects', str(config.get('objects', 500)),
-        '--max-in-flight', str(config.get('max_in_flight', 16)),
-        '--size', str(object_size),
-        '--min-stride-size', str(config.get('min_stride_size', object_size // 10)),
-        '--max-stride-size', str(config.get('max_stride_size', object_size // 5)),
-        '--max-seconds', str(config.get('max_seconds', 0))
-        ])
+    if config.get("ec_pool", False):
+        args.extend(["--no-omap"])
+        if not config.get("erasure_code_use_overwrites", False):
+            args.extend(["--ec-pool"])
+    if config.get("write_fadvise_dontneed", False):
+        args.extend(["--write-fadvise-dontneed"])
+    if config.get("set_redirect", False):
+        args.extend(["--set_redirect"])
+    if config.get("set_chunk", False):
+        args.extend(["--set_chunk"])
+    if config.get("enable_dedup", False):
+        args.extend(["--enable_dedup"])
+    if config.get("low_tier_pool", None):
+        args.extend(["--low_tier_pool", config.get("low_tier_pool", None)])
+    if config.get("dedup_chunk_size", False):
+        args.extend(["--dedup_chunk_size", config.get("dedup_chunk_size", None)])
+    if config.get("dedup_chunk_algo", False):
+        args.extend(["--dedup_chunk_algo", config.get("dedup_chunk_algo", None)])
+    if config.get("pool_snaps", False):
+        args.extend(["--pool-snaps"])
+    if config.get("balance_reads", False):
+        args.extend(["--balance-reads"])
+        pct_update_delay = config.get("pct_update_delay", 5)
+    if config.get("localize_reads", False):
+        args.extend(["--localize-reads"])
+    if config.get("max_attr_len", None):
+        args.extend(["--max-attr-len", str(config.get("max_attr_len"))])
+    args.extend(
+        [
+            "--max-ops",
+            str(config.get("ops", 10000)),
+            "--objects",
+            str(config.get("objects", 500)),
+            "--max-in-flight",
+            str(config.get("max_in_flight", 16)),
+            "--size",
+            str(object_size),
+            "--min-stride-size",
+            str(config.get("min_stride_size", object_size // 10)),
+            "--max-stride-size",
+            str(config.get("max_stride_size", object_size // 5)),
+            "--max-seconds",
+            str(config.get("max_seconds", 0)),
+        ]
+    )
 
     weights = {}
     weights["read"] = 100
@@ -305,11 +287,8 @@ def task(ctx, config):
                     pool = manager.create_pool_with_unique_name(
                         erasure_code_profile_name=profile_name,
                         erasure_code_crush_rule_name=crush_name,
-
-                        erasure_code_use_overwrites=
-                          config.get('erasure_code_use_overwrites', False),
-                        erasure_code_use_optimizations=
-                          config.get('erasure_code_use_optimizations', False)
+                        erasure_code_use_overwrites=config.get("erasure_code_use_overwrites", False),
+                        erasure_code_use_optimizations=config.get("erasure_code_use_optimizations", False),
                     )
                     created_pools.append(pool)
                     if config.get("fast_read", False):
@@ -330,12 +309,12 @@ def task(ctx, config):
                 ctx.ceph[cluster].thrashers.append(proc)
                 tests[id_] = proc
             # LEE proof of concept experiment
-            try: 
-                run.wait(tests.values(),10)
+            try:
+                run.wait(tests.values(), 10)
             except MaxWhileTries as e:
-                log.info('LEE: %s',e.args )
+                log.info("LEE: %s", e.args)
                 # LEE proof of concept experiment
-                log.info('LEE: timed out - closing stding') 
+                log.info("LEE: timed out - closing stding")
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.
@@ -347,7 +326,7 @@ def task(ctx, config):
 
             for pool in created_pools:
                 manager.wait_snap_trimming_complete(pool)
-                manager.remove_pool(pool)
+            manager.remove_pool(pool)
 
     running = gevent.spawn(thread)
 
