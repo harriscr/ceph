@@ -389,7 +389,7 @@ def task(ctx, config):
             # try:
 
             canine = CephTestRados(ctx, config, cluster, tests)
-            run(tests.values())
+            run.wait(tests.values())
             ctx.ceph[cluster].thrashers.append(canine)
 
             # except MaxWhileTries as e:
