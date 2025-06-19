@@ -100,6 +100,7 @@ class DaemonWatchdog(Greenlet):
         for thrasher in self.thrashers:
             self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
+            raise thrasher.exception
 
     def watch(self):
         self.log("watchdog starting")
@@ -144,7 +145,7 @@ class DaemonWatchdog(Greenlet):
 
             for thrasher in self.thrashers:
                 if thrasher.exception is not None:
-                    self.log("{name} failed".format(name=thrasher.name))
+                    self.log(f"{thrasher.name} failed with exception {thrasher.exception}")
                     thrasher.stop_and_join()
                     bark = True
 
