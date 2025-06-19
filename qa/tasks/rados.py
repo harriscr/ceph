@@ -391,6 +391,8 @@ def task(ctx, config):
             except Exception as e:
                 cat.set_exception(e)
 
+            if cat.exception:
+                raise cat.exception
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
             # LEE proof of concept experiment
