@@ -6,6 +6,7 @@ import contextlib
 import logging
 
 import gevent
+from gevent.greenlet import Greenlet
 
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
@@ -306,8 +307,11 @@ def task(ctx, config):
                     stdin=run.PIPE,
                     wait=False,
                 )
-                ctx.ceph[cluster].thrashers.append(proc)
+
                 tests[id_] = proc
+
+            thrasher = CephTestRados(ctx, config, cluster, tests)
+            ctx.ceph[cluster].thrashers.append(thrasher)
             # LEE proof of concept experiment
             try:
                 run.wait(tests.values(), 10)
