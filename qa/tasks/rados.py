@@ -394,9 +394,6 @@ def task(ctx, config):
             except Exception as e:
                 cat.set_exception(e)
 
-            if cat.exception:
-                log.info("CHDEBUG: exception so raising")
-                raise cat.exception
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
             # LEE proof of concept experiment
@@ -409,6 +406,10 @@ def task(ctx, config):
                 # Mainly used for test_pool_min_size
                 manager.wait_for_clean()
                 manager.wait_for_all_osds_up(timeout=1800)
+
+            if cat.exception:
+                log.info("CHDEBUG: exception so raising")
+                raise cat.exception
 
             for pool in created_pools:
                 manager.wait_snap_trimming_complete(pool)
