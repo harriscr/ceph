@@ -186,6 +186,7 @@ class DaemonWatchdog(Greenlet):
 
             if time.time() - start_time >= 600:
                 bark = True
+                bark_reason = "TEST: 10 minutes have passed so killing"
 
             if bark:
                 self.bark(bark_reason)
