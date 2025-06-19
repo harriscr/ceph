@@ -109,6 +109,7 @@ class DaemonWatchdog(Greenlet):
         daemon_timeout = int(self.config.get("daemon_timeout", 300))
         daemon_restart = self.config.get("daemon_restart", False)
         daemon_failure_time = {}
+        start_time = time.time()
         while not self.stopping.is_set():
             bark = False
             now = time.time()
@@ -150,7 +151,7 @@ class DaemonWatchdog(Greenlet):
                     thrasher.stop_and_join()
                     bark = True
 
-            if time.time() - now >= 60:
+            if time.time() - start_time >= 60:
                 bark = True
 
             if bark:
