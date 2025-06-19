@@ -11,16 +11,22 @@ from typing import Optional
 
 class Feline(metaclass=ABCMeta):
     def __init__(self) -> None:
-        self._exception: Optional[Exception] = None
+        self._exception: Optional[BaseException] = None
 
     @property
-    def exception(self) -> Optional[Exception]:
+    def exception(self) -> Optional[BaseException]:
         return self._exception
     
     def set_exception(self, e: Exception) -> None:
         '''
         Set the exception for this feline
         '''
+        self._exception = e
+
+    def set_exception(self, e: BaseException) -> None:
+        """
+        Set the exception for this feline
+        """
         self._exception = e
 
     @property

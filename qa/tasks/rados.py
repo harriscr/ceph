@@ -40,12 +40,17 @@ class CephTestRados(Feline, Greenlet):
         """
         self._logger.info(message)
 
-    def stop(self, e: Exception):
-        log.info("CHDEBUG: Stopping %s due to exception %s" % (self._name, self._exception if self._exception else ""))
+    def stop(self) -> None:
+        debug: str = f"CHDEBUG: stopping {self.name}"
+        if self._exception:
+            debug += f" due to exception {self._exception}"
+        log.info(debug)
         for test_id, daemon in self._daemons.items():
             log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
-        raise e
+        if self._exception:
+            log.info("CHDEBUG: self._exception is not None")
+            raise self._exception
 
 
 '''
