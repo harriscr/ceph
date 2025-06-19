@@ -10,6 +10,7 @@ from typing import Optional
 import gevent
 from gevent.greenlet import Greenlet
 
+from tasks.thrasher import Thrasher
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
 from teuthology.orchestra import run
@@ -49,13 +50,25 @@ class Canine(Greenlet, ABC):
         """
 
 
-class CephTestRados(Canine, Greenlet):
-    def __init__(self, ctx, cluster, daemons):
-        super().__init__(ctx, cluster, daemons)
+class CephTestRados(Thrasher, Greenlet):
+    def __init__(self, ctx, config, cluster, daemons):
+        super(CephTestRados, self).__init__()
 
-    @property
-    def name(self) -> str:
-        return f"ceph-test-rados-{self._cluster}"
+        self.ctx = ctx
+        self.config = config
+        self.cluster = cluster
+        self.daemons = daemons
+        self.name = f"ceph-test-rados-{self._cluster}"
+
+        self.logger = log
+
+    # @property
+    # def name(self) -> str:
+    #    return f"ceph-test-rados-{self._cluster}"
+
+    def log(self, x):
+        """Write data to logger assigned to this RBDMirrorThrasher"""
+        self.logger.info(x)
 
     def stop(self):
         log.info("CHDEBUG: Stopping the test")
@@ -64,9 +77,9 @@ class CephTestRados(Canine, Greenlet):
             daemon.stdin.close()
             # daemon.stdin.close()
 
-    # def join(self):
-    #    log.info("CHDEBUG: Joining the test")
-    #    pass
+    def join(self):
+        log.info("CHDEBUG: Joining the test")
+        pass
 
     # def stop_and_join(self):
     #    self.stop()
@@ -375,9 +388,9 @@ def task(ctx, config):
             # LEE proof of concept experiment
             # try:
 
-            canine = CephTestRados(ctx, cluster, tests)
+            canine = CephTestRados(ctx, config, cluster, tests)
             run(tests.values())
-            ctx.ceph[cluster].canines.append(canine)
+            ctx.ceph[cluster].thrashers.append(canine)
 
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)
