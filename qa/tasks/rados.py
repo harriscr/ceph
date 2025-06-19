@@ -4,7 +4,6 @@ Rados modle-based integration tests
 
 import contextlib
 import logging
-from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 import gevent
@@ -18,46 +17,14 @@ from teuthology.orchestra import run
 
 log = logging.getLogger(__name__)
 
-
-class Canine(Greenlet, ABC):
-    def __init__(self, ctx, cluster, daemons) -> None:
-        self._processes = daemons
-        self._cluster = cluster
-        self._context = ctx
-        self._exception: Optional[Exception] = None
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """
-        The name of the test
-        """
-
-    @property
-    def exeption(self) -> Exception:
-        return self._exception
-
-    def woof(self) -> None:
-        log.warning("CHDEBUG - we have been told to bark")
-        self.stop()
-
-    def set_exception(self, process_exception: Exception) -> None:
-        self._exception = process_exception
-
-    @abstractmethod
-    def stop() -> None:
-        """
-        Stop all processes related to this canine
-        """
-
-
+'''
 class CephTestRados(Feline, Greenlet):
-    def __init__(self, ctx, config, cluster, daemons):
-        super().__init__()
+    def __init__(self, ctx: dict[Any, Any], config: dict[Any, Any], cluster: str, daemons: dict[str, Any]):
+        super(CephTestRados, self).__init__()
 
         self._ctx = ctx
         self._config = config
-        self._cluster = cluster
+        self._cluster: str = cluster
         self._daemons: dict[str, Any] = daemons
         self._name: str = f"ceph-test-rados-{self._cluster}"
 
@@ -78,6 +45,39 @@ class CephTestRados(Feline, Greenlet):
         for test_id, daemon in self._daemons.items():
             log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
+'''
+
+
+class CephTestRados(Thrasher, Greenlet):
+    def __init__(self, ctx: dict[Any, Any], config: dict[Any, Any], cluster: str, daemons: dict[str, Any]):
+        super(CephTestRados, self).__init__()
+
+        self._ctx = ctx
+        self._config = config
+        self._cluster: str = cluster
+        self._daemons: dict[str, Any] = daemons
+        self._name: str = f"ceph-test-rados-{self._cluster}"
+
+        self._logger = log
+
+    # @property
+    # def collar(self) -> str:
+    #    return self._name
+
+    def log(self, message: str):
+        """
+        Write data to logger assigned to this RBDMirrorThrasher
+        """
+        self._logger.info(message)
+
+    def stop(self):
+        log.info("Stopping %s due to exception %s" % (self._name, self._exception if self._exception else ""))
+        for test_id, daemon in self._daemons.items():
+            log.info("Stopping instance %s", test_id)
+            daemon.stdin.close()
+
+    def stop_and_join(self) -> None:
+        self.stop()
 
 
 @contextlib.contextmanager
