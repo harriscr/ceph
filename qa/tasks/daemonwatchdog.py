@@ -102,7 +102,7 @@ class DaemonWatchdog(Greenlet):
 
         for thrasher in self.thrashers:
             self.log("Killing running thrasher {name}".format(name=thrasher.name))
-            thrasher.stop_and_join() 
+            thrasher.stop_and_join()
 
     def watch(self):
         self.log("watchdog starting")
@@ -149,6 +149,9 @@ class DaemonWatchdog(Greenlet):
                     self.log("{name} failed".format(name=thrasher.name))
                     thrasher.stop_and_join()
                     bark = True
+
+            if time.time() - now >= 60:
+                bark = True
 
             if bark:
                 self.bark()

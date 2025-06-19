@@ -338,13 +338,12 @@ def task(ctx, config):
             ctx.ceph[cluster].thrashers.append(thrasher)
             # LEE proof of concept experiment
             try:
-                run.wait(tests.values(), 600)
+                run.wait(tests.values(), 5400)
             except MaxWhileTries as e:
                 log.info("LEE: %s", e.args)
                 # LEE proof of concept experiment
                 log.info("LEE: timed out - closing stdin")
                 thrasher.set_thrasher_exception(e)
-                thrasher.stop()
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.
