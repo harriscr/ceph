@@ -28,6 +28,20 @@ class CephTestRados(Thrasher, Greenlet):
         for proc in tests.values()
             proc.stdin.close()
 
+
+class CephTestRados(Thrasher, Greenlet):
+
+    def __init__(self, ctx, config, cluster, tests):
+        self.ctx = ctx
+        self.config = config
+        self._cluster = cluster
+
+        self.tests = tests
+
+    def stop():
+        for proc in tests.values()
+            proc.stdin.close()
+
 @contextlib.contextmanager
 def task(ctx, config):
     """
