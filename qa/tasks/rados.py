@@ -40,14 +40,12 @@ class CephTestRados(Feline, Greenlet):
         """
         self._logger.info(message)
 
-    def set_exception(self, e: Exception) -> None:
-        self._exception = e
-
-    def stop(self):
-        log.info("Stopping %s due to exception %s" % (self._name, self._exception if self._exception else ""))
+    def stop(self, e: Exception):
+        log.info("CHDEBUG: Stopping %s due to exception %s" % (self._name, self._exception if self._exception else ""))
         for test_id, daemon in self._daemons.items():
             log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
+        raise e
 
 
 '''
@@ -397,7 +395,6 @@ def task(ctx, config):
             #    log.info("LEE: %s", e.args)
             # LEE proof of concept experiment
             #    log.info("LEE: timed out - closing stdin")
-            #    canine.set_exception(e)
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.

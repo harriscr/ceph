@@ -114,18 +114,13 @@ class DaemonWatchdog(Greenlet):
         self.log(f"CHDEBUG: List of cats to kill is {self.cats}")
         for cat in self.cats:
             self.log(f"CHDEBUG: Killing cat {cat.collar}")
+            cat.set_exception(WoofError(reason))
             cat.stop()
 
         self.log(f"CHDEBUG: List of thrashers to kill is {self.thrashers}")
         for thrasher in self.thrashers:
             self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
-
-        self.log("CHDEBUG: Raising exception")
-        if self._exception is not None:
-            raise WoofError(reason) from self._exception
-        else:
-            raise WoofError(reason)
 
     def watch(self):
         self.log("watchdog starting")

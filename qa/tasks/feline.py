@@ -16,6 +16,12 @@ class Feline(metaclass=ABCMeta):
     @property
     def exception(self) -> Optional[Exception]:
         return self._exception
+    
+    def set_exception(self, e: Exception) -> None:
+        '''
+        Set the exception for this feline
+        '''
+        self._exception = e
 
     @property
     @abstractmethod
