@@ -4,11 +4,12 @@ Rados modle-based integration tests
 
 import contextlib
 import logging
+from abc import ABC, abstractmethod
+from typing import Optional
 
 import gevent
 from gevent.greenlet import Greenlet
 
-from tasks.thrasher import Thrasher
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
 from teuthology.orchestra import run
@@ -16,16 +17,43 @@ from teuthology.orchestra import run
 log = logging.getLogger(__name__)
 
 
-class CephTestRados(Thrasher, Greenlet):
-    def __init__(self, ctx, config, cluster, daemons):
-        super(CephTestRados, self).__init__()
+class Canine(Greenlet, ABC):
+    def __init__(self, ctx, cluster, daemons) -> None:
+        self._processes = daemons
+        self._cluster = cluster
+        self._context = ctx
+        self._exception: Optional[Exception] = None
 
-        self.ctx = ctx
-        self.config = config
-        self.cluster = cluster
-        self.daemons = daemons
+    @property
+    @abstractmethod
+    def name(self) -> str:
 
-        self.logger = log
+    @property
+    def exeption(self) -> Exception:
+        return self._exception
+
+
+    def woof(self) -> None:
+        log.warning("CHDEBUG - we have been told to bark")
+        self.stop()
+
+    def set_exception(self, process_exception: Exception) -> None:
+        self._exception = process_exception
+
+    @abstractmethod
+    def stop() -> None:
+        """
+        Stop all processes related to this canine
+        """
+
+
+class CephTestRados(Canine, Greenlet):
+    def __init__(self, ctx, cluster, daemons):
+        super().__init__(ctx, cluster, daemons)
+
+    @property
+    def name(self) -> str:
+        return f"ceph-test-rados-{self._cluster}"
 
     def stop(self):
         log.info("CHDEBUG: Stopping the test")
@@ -33,10 +61,17 @@ class CephTestRados(Thrasher, Greenlet):
             log.info("CHDEBUG: Stopping instance %s", test_id)
             daemon.stdin.close()
             # daemon.stdin.close()
+        
 
-    def join(self):
-        log.info("CHDEBUG: Joining the test")
-        pass
+    
+
+    # def join(self):
+    #    log.info("CHDEBUG: Joining the test")
+    #    pass
+
+    # def stop_and_join(self):
+    #    self.stop()
+    #    self.join()
 
     def stop_and_join(self):
         self.stop()
@@ -338,8 +373,8 @@ def task(ctx, config):
 
                 tests[id_] = proc
 
-            thrasher = CephTestRados(ctx, config, cluster, tests)
-            ctx.ceph[cluster].thrashers.append(thrasher)
+            canine = CephTestRados(ctx, cluster, tests)
+            ctx.ceph[cluster].canines.append(canine)
             # LEE proof of concept experiment
             try:
                 run.wait(tests.values(), 5400)
@@ -347,7 +382,7 @@ def task(ctx, config):
                 log.info("LEE: %s", e.args)
                 # LEE proof of concept experiment
                 log.info("LEE: timed out - closing stdin")
-                thrasher.set_thrasher_exception(e)
+                canine.set_exception(e)
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.

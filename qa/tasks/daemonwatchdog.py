@@ -27,7 +27,7 @@ class DaemonWatchdog(Greenlet):
                                               watchdog will bark.
     """
 
-    def __init__(self, ctx, config, thrashers):
+    def __init__(self, ctx, config, thrashers, canines):
         super(DaemonWatchdog, self).__init__()
         self.config = ctx.config.get("watchdog", {})
         self.ctx = ctx
@@ -37,6 +37,7 @@ class DaemonWatchdog(Greenlet):
         self.name = "watchdog"
         self.stopping = Event()
         self.thrashers = thrashers
+        self.canines = canines
 
     def _run(self):
         try:
@@ -103,6 +104,10 @@ class DaemonWatchdog(Greenlet):
         for thrasher in self.thrashers:
             self.log("Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
+
+        for barker in self.canines:
+            self.log("Killing running process {name}".format(name=canine.name))
+            barker.woof()
 
     def watch(self):
         self.log("watchdog starting")
