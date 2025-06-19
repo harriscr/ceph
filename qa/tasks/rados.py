@@ -341,6 +341,7 @@ def task(ctx, config):
                 log.info("LEE: %s", e.args)
                 # LEE proof of concept experiment
                 log.info("LEE: timed out - closing stding")
+                self.stop()
 
             wait_for_all_active_clean_pgs = config.get("wait_for_all_active_clean_pgs", False)
             # usually set when we do min_size testing.
