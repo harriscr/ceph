@@ -51,7 +51,7 @@ class DaemonWatchdog(Greenlet):
         self.stopping = Event()
         self.thrashers = ctx.ceph[config["cluster"]].thrashers
         self.cats: list[Feline] = ctx.ceph[config["cluster"]].felines
-        self._exeption: Optional[Exception] = None
+        self._exception: Optional[Exception] = None
 
     def _run(self):
         try:
@@ -121,7 +121,7 @@ class DaemonWatchdog(Greenlet):
             thrasher.stop_and_join()
 
         self.log("CHDEBUG: Raising exception")
-        if self._exception:
+        if self._exception is not None:
             raise WoofError(reason) from self._exception
         else:
             raise WoofError(reason)
