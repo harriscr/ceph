@@ -5,11 +5,12 @@ Rados modle-based integration tests
 import contextlib
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 import gevent
 from gevent.greenlet import Greenlet
 
+from tasks.feline import Feline
 from tasks.thrasher import Thrasher
 from teuthology import misc as teuthology
 from teuthology.contextutil import MaxWhileTries
@@ -50,40 +51,33 @@ class Canine(Greenlet, ABC):
         """
 
 
-class CephTestRados(Thrasher, Greenlet):
+class CephTestRados(Feline, Greenlet):
     def __init__(self, ctx, config, cluster, daemons):
-        super(CephTestRados, self).__init__()
+        super().__init__()
 
-        self.ctx = ctx
-        self.config = config
-        self.cluster = cluster
-        self.daemons = daemons
-        self.name = f"ceph-test-rados-{self.cluster}"
+        self._ctx = ctx
+        self._config = config
+        self._cluster = cluster
+        self._daemons: dict[str, Any] = daemons
+        self._name: str = f"ceph-test-rados-{self.cluster}"
 
-        self.logger = log
+        self._logger = log
 
-    # @property
-    # def name(self) -> str:
-    #    return f"ceph-test-rados-{self.cluster}"
+    @property
+    def collar(self) -> str:
+        return self._name
 
-    def log(self, x):
-        """Write data to logger assigned to this RBDMirrorThrasher"""
-        self.logger.info(x)
+    def log(self, message: str):
+        """
+        Write data to logger assigned to this RBDMirrorThrasher
+        """
+        self._logger.info(message)
 
     def stop(self):
-        log.info("CHDEBUG: Stopping the test")
-        for test_id, daemon in self.daemons.items():
-            log.info("CHDEBUG: Stopping instance %s", test_id)
+        log.info("Stopping %s due to exception %s" % (self._name, self._exception if self._exception else ""))
+        for test_id, daemon in self._daemons.items():
+            log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
-            # daemon.stdin.close()
-
-    def join(self):
-        log.info("CHDEBUG: Joining the test")
-        pass
-
-    def stop_and_join(self):
-        self.stop()
-        self.join()
 
 
 @contextlib.contextmanager
@@ -384,10 +378,13 @@ def task(ctx, config):
             # LEE proof of concept experiment
             # try:
 
-            canine = CephTestRados(ctx, config, cluster, tests)
+            cat = CephTestRados(ctx, config, cluster, tests)
             log.info("CHDEBUG: About to add CephTestRados thrasher to cluster list for run %s" % i)
-            ctx.ceph[cluster].thrashers.append(canine)
-            run.wait(tests.values())
+            ctx.ceph[cluster].felines.append(cat)
+            try:
+                run.wait(tests.values())
+            except Exception as e:
+                cat.exception = e
 
             # except MaxWhileTries as e:
             #    log.info("LEE: %s", e.args)

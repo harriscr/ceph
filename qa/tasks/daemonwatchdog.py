@@ -6,6 +6,8 @@ from gevent import sleep
 from gevent.event import Event
 from gevent.greenlet import Greenlet
 
+from tasks.feline import Feline
+
 log = logging.getLogger(__name__)
 
 
@@ -37,7 +39,8 @@ class DaemonWatchdog(Greenlet):
         self.name = "watchdog"
         self.stopping = Event()
         self.thrashers = ctx.ceph[config["cluster"]].thrashers
-        log.info("CHDEBUG: Initing watchdog with thrshers: %s" % self.thrashers)
+        self.cats: list[Feline] = ctx.ceph[config["cluster"]].felines
+        log.info("CHDEBUG: Initing watchdog with thrshers: %s and felines %s" % (self.thrashers, self.cats))
 
     def _run(self):
         try:
@@ -102,6 +105,12 @@ class DaemonWatchdog(Greenlet):
             thrasher.stop_and_join()
             raise thrasher.exception
 
+        self.log(f"CHDEBUG: List of cats to kill is {self.cats}")
+        for cat in self.cats:
+            self.log(f"CHDEBUG: Killing cat {cat.collar}")
+            cat.stop()
+            raise cat.exception
+
     def watch(self):
         self.log("watchdog starting")
         daemon_timeout = int(self.config.get("daemon_timeout", 300))
@@ -147,6 +156,11 @@ class DaemonWatchdog(Greenlet):
                 if thrasher.exception is not None:
                     self.log(f"{thrasher.name} failed with exception {thrasher.exception}")
                     thrasher.stop_and_join()
+                    bark = True
+
+            for cat in self.cats:
+                if cat.exception is not None:
+                    self.log(f"{cat.collar} as asserted with exception {cat.exception}")
                     bark = True
 
             if time.time() - start_time >= 600:
