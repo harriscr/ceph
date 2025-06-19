@@ -38,6 +38,10 @@ class CephTestRados(Thrasher, Greenlet):
         log.info("CHDEBUG: Joining the test")
         pass
 
+    def stop_and_join(self):
+        self.stop()
+        self.join()
+
 
 @contextlib.contextmanager
 def task(ctx, config):
