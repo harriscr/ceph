@@ -61,6 +61,7 @@ class DaemonWatchdog(Greenlet):
             self.e = e
             self.logger.exception("exception:")
             # allow successful completion so gevent doesn't see an exception...
+            raise e
 
     def log(self, x):
         """Write data to logger"""
