@@ -47,9 +47,9 @@ class CephTestRados(Feline, Greenlet):
         for test_id, daemon in self._daemons.items():
             log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
+
+
 '''
-
-
 class CephTestRados(Thrasher, Greenlet):
     def __init__(self, ctx: dict[Any, Any], config: dict[Any, Any], cluster: str, daemons: dict[str, Any]):
         super(CephTestRados, self).__init__()
@@ -80,9 +80,8 @@ class CephTestRados(Thrasher, Greenlet):
 
     def stop_and_join(self) -> None:
         self.stop()
-
-
 '''
+
 class CephTestRados(Thrasher, Greenlet):
     def __init__(self, ctx: dict[Any, Any], config: dict[Any, Any], cluster: str, daemons: dict[str, Any]):
         super(CephTestRados, self).__init__()
