@@ -1,6 +1,7 @@
 import logging
 import signal
 import time
+from typing import Optional
 
 from gevent import sleep
 from gevent.event import Event
@@ -9,6 +10,16 @@ from gevent.greenlet import Greenlet
 from tasks.feline import Feline
 
 log = logging.getLogger(__name__)
+
+
+class WoofError(Exception):
+    """
+    An exception to throw when the watchdog barks
+    """
+
+    def __init__(self, bark_reason: str) -> None:
+        self.message = f"The WatchDog barked barked due to {bark_reason}"
+        super().__init__(self.message)
 
 
 class DaemonWatchdog(Greenlet):
@@ -40,7 +51,7 @@ class DaemonWatchdog(Greenlet):
         self.stopping = Event()
         self.thrashers = ctx.ceph[config["cluster"]].thrashers
         self.cats: list[Feline] = ctx.ceph[config["cluster"]].felines
-        log.info("CHDEBUG: Initing watchdog with thrshers: %s and felines %s" % (self.thrashers, self.cats))
+        self._exeption: Optional[Exception] = None
 
     def _run(self):
         try:
@@ -58,7 +69,7 @@ class DaemonWatchdog(Greenlet):
     def stop(self):
         self.stopping.set()
 
-    def bark(self):
+    def bark(self, reason: str):
         self.log("BARK! unmounting mounts and killing all daemons")
         if hasattr(self.ctx, "mounts"):
             for mount in self.ctx.mounts.values():
@@ -103,18 +114,22 @@ class DaemonWatchdog(Greenlet):
         for cat in self.cats:
             self.log(f"CHDEBUG: Killing cat {cat.collar}")
             cat.stop()
-            # raise cat.exception
 
         self.log(f"CHDEBUG: List of thrashers to kill is {self.thrashers}")
         for thrasher in self.thrashers:
             self.log("CHDEBUG: Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
-            # raise thrasher.exception
+
+        if self._exception:
+            raise WoofError(reason) from self._exception
+        else:
+            raise WoofError(reason)
 
     def watch(self):
         self.log("watchdog starting")
         daemon_timeout = int(self.config.get("daemon_timeout", 300))
         daemon_restart = self.config.get("daemon_restart", False)
+        bark_reason: str = ""
         daemon_failure_time = {}
         start_time = time.time()
         while not self.stopping.is_set():
@@ -142,6 +157,7 @@ class DaemonWatchdog(Greenlet):
                 self.log("daemon {name} is failed for ~{t:.0f}s".format(name=name, t=delta))
                 if delta > daemon_timeout:
                     bark = True
+                    bark_reason = f"Daemon {name} failed"
                 if daemon_restart == "normal" and daemon.proc.exitstatus == 0:
                     self.log(f"attempting to restart daemon {name}")
                     daemon.restart()
@@ -154,20 +170,24 @@ class DaemonWatchdog(Greenlet):
 
             for thrasher in self.thrashers:
                 if thrasher.exception is not None:
-                    self.log(f"{thrasher.name} failed with exception {thrasher.exception}")
-                    thrasher.stop_and_join()
+                    # thrasher.stop_and_join()
+                    bark_reason = f"Thrasher {thrasher.name} failed with Exception"
+                    self.log(bark_reason)
+                    self._exception = thrasher.exception
                     bark = True
 
             for cat in self.cats:
                 if cat.exception is not None:
-                    self.log(f"{cat.collar} as asserted with exception {cat.exception}")
+                    bark_reason = f"Cat {cat.collar} has asserted with {cat.exception}"
+                    self.log(bark_reason)
+                    self._exception = cat.exception
                     bark = True
 
             if time.time() - start_time >= 600:
                 bark = True
 
             if bark:
-                self.bark()
+                self.bark(bark_reason)
                 return
 
             sleep(5)
