@@ -58,13 +58,13 @@ class CephTestRados(Thrasher, Greenlet):
         self.config = config
         self.cluster = cluster
         self.daemons = daemons
-        self.name = f"ceph-test-rados-{self._cluster}"
+        self.name = f"ceph-test-rados-{self.cluster}"
 
         self.logger = log
 
     # @property
     # def name(self) -> str:
-    #    return f"ceph-test-rados-{self._cluster}"
+    #    return f"ceph-test-rados-{self.cluster}"
 
     def log(self, x):
         """Write data to logger assigned to this RBDMirrorThrasher"""
