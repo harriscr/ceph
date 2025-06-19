@@ -96,7 +96,7 @@ class DaemonWatchdog(Greenlet):
             except:
                 self.logger.exception("ignoring exception:")
 
-        self.log("List of thrashers to kill is %s", self.thrashers)
+        self.log(f"List of thrashers to kill is {self.thrashers}")
         for thrasher in self.thrashers:
             self.log("Killing running thrasher {name}".format(name=thrasher.name))
             thrasher.stop_and_join()
