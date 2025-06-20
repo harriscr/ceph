@@ -134,7 +134,7 @@ class CBT(Task):
         # Setting this so that I can test my CBT changes with the standard ceph build
         # there must be a better way to do this
         repo = self.config.get("repo", "https://github.com/harriscr/cbt.git")
-        branch = self.config.get("branch", "ch_wip_workload_refactor")
+        branch = self.config.get("branch", "ch_wip_workload_postprocessing")
         branch = self.config.get("force-branch", branch)
         sha1 = self.config.get("sha1")
         if sha1 is None:

@@ -81,7 +81,7 @@ fi
 if test -z "$cbt_dir"; then
     cbt_dir=$PWD/cbt
     # testing my CBT changes rather than using standard CBT - do I need this?
-    git clone --depth 1 -b ch_wip_workload_refactor https://github.com/harriscr/cbt.git $cbt_dir
+    git clone --depth 1 -b ch_wip_workload_postprocessing https://github.com/harriscr/cbt.git $cbt_dir
 fi
 
 # store absolute path before changing cwd
