@@ -3,10 +3,23 @@ import signal
 import time
 
 from gevent import sleep
-from gevent.greenlet import Greenlet
 from gevent.event import Event
+from gevent.greenlet import Greenlet
+
+from .watched_process import WatchedProcess
 
 log = logging.getLogger(__name__)
+
+
+class BarkError(Exception):
+    """
+    An exception to throw when the watchdog barks
+    """
+
+    def __init__(self, bark_reason: str) -> None:
+        self.message = f"The WatchDog barked due to {bark_reason}"
+        super().__init__(self.message)
+
 
 class DaemonWatchdog(Greenlet):
     """
@@ -26,16 +39,17 @@ class DaemonWatchdog(Greenlet):
                                               watchdog will bark.
     """
 
-    def __init__(self, ctx, config, thrashers):
+    def __init__(self, ctx, config):
         super(DaemonWatchdog, self).__init__()
-        self.config = ctx.config.get('watchdog', {})
+        self.config = ctx.config.get("watchdog", {})
         self.ctx = ctx
         self.e = None
-        self.logger = log.getChild('daemon_watchdog')
-        self.cluster = config.get('cluster', 'ceph')
-        self.name = 'watchdog'
+        self.logger = log.getChild("daemon_watchdog")
+        self.cluster = config.get("cluster", "ceph")
+        self.name = "watchdog"
         self.stopping = Event()
-        self.thrashers = thrashers
+        self.thrashers = ctx.ceph[config["cluster"]].thrashers
+        self.watched_processes: list[WatchedProcess] = ctx.ceph[config["cluster"]].watched_processes
 
     def _run(self):
         try:
@@ -53,20 +67,40 @@ class DaemonWatchdog(Greenlet):
     def stop(self):
         self.stopping.set()
 
-    def bark(self):
+    def bark(self, reason: str):
         self.log("BARK! unmounting mounts and killing all daemons")
-        if hasattr(self.ctx, 'mounts'):
+        if hasattr(self.ctx, "mounts"):
             for mount in self.ctx.mounts.values():
                 try:
                     mount.umount_wait(force=True)
                 except:
                     self.logger.exception("ignoring exception:")
         daemons = []
-        daemons.extend(filter(lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role('osd', cluster=self.cluster)))
-        daemons.extend(filter(lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role('mds', cluster=self.cluster)))
-        daemons.extend(filter(lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role('mon', cluster=self.cluster)))
-        daemons.extend(filter(lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role('rgw', cluster=self.cluster)))
-        daemons.extend(filter(lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role('mgr', cluster=self.cluster)))
+        daemons.extend(
+            filter(
+                lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role("osd", cluster=self.cluster)
+            )
+        )
+        daemons.extend(
+            filter(
+                lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role("mds", cluster=self.cluster)
+            )
+        )
+        daemons.extend(
+            filter(
+                lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role("mon", cluster=self.cluster)
+            )
+        )
+        daemons.extend(
+            filter(
+                lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role("rgw", cluster=self.cluster)
+            )
+        )
+        daemons.extend(
+            filter(
+                lambda daemon: not daemon.finished(), self.ctx.daemons.iter_daemons_of_role("mgr", cluster=self.cluster)
+            )
+        )
 
         for daemon in daemons:
             try:
@@ -75,23 +109,29 @@ class DaemonWatchdog(Greenlet):
                 self.logger.exception("ignoring exception:")
 
         for thrasher in self.thrashers:
-            self.log("Killing running thrasher {name}".format(name=thrasher.name))
-            thrasher.stop_and_join() 
+            self.log("Killing thrasher {name}".format(name=thrasher.name))
+            thrasher.stop_and_join()
+
+        for proc in self.watched_processes:
+            self.log("Killing remote process %s" % proc.id)
+            proc.set_exception(BarkError(reason))
+            proc.stop()
 
     def watch(self):
         self.log("watchdog starting")
-        daemon_timeout = int(self.config.get('daemon_timeout', 300))
-        daemon_restart = self.config.get('daemon_restart', False)
+        daemon_timeout = int(self.config.get("daemon_timeout", 300))
+        daemon_restart = self.config.get("daemon_restart", False)
         daemon_failure_time = {}
+        bark_reason: str = ""
         while not self.stopping.is_set():
             bark = False
             now = time.time()
 
-            osds = self.ctx.daemons.iter_daemons_of_role('osd', cluster=self.cluster)
-            mons = self.ctx.daemons.iter_daemons_of_role('mon', cluster=self.cluster)
-            mdss = self.ctx.daemons.iter_daemons_of_role('mds', cluster=self.cluster)
-            rgws = self.ctx.daemons.iter_daemons_of_role('rgw', cluster=self.cluster)
-            mgrs = self.ctx.daemons.iter_daemons_of_role('mgr', cluster=self.cluster)
+            osds = self.ctx.daemons.iter_daemons_of_role("osd", cluster=self.cluster)
+            mons = self.ctx.daemons.iter_daemons_of_role("mon", cluster=self.cluster)
+            mdss = self.ctx.daemons.iter_daemons_of_role("mds", cluster=self.cluster)
+            rgws = self.ctx.daemons.iter_daemons_of_role("rgw", cluster=self.cluster)
+            mgrs = self.ctx.daemons.iter_daemons_of_role("mgr", cluster=self.cluster)
 
             daemon_failures = []
             daemon_failures.extend(filter(lambda daemon: daemon.finished(), osds))
@@ -101,31 +141,38 @@ class DaemonWatchdog(Greenlet):
             daemon_failures.extend(filter(lambda daemon: daemon.finished(), mgrs))
 
             for daemon in daemon_failures:
-                name = daemon.role + '.' + daemon.id_
+                name = daemon.role + "." + daemon.id_
                 dt = daemon_failure_time.setdefault(name, (daemon, now))
                 assert dt[0] is daemon
-                delta = now-dt[1]
+                delta = now - dt[1]
                 self.log("daemon {name} is failed for ~{t:.0f}s".format(name=name, t=delta))
                 if delta > daemon_timeout:
+                    bark_reason = f"Daemon {name} has failed"
                     bark = True
-                if daemon_restart == 'normal' and daemon.proc.exitstatus == 0:
+                if daemon_restart == "normal" and daemon.proc.exitstatus == 0:
                     self.log(f"attempting to restart daemon {name}")
                     daemon.restart()
 
             # If a daemon is no longer failed, remove it from tracking:
             for name in list(daemon_failure_time.keys()):
-                if name not in [d.role + '.' + d.id_ for d in daemon_failures]:
+                if name not in [d.role + "." + d.id_ for d in daemon_failures]:
                     self.log("daemon {name} has been restored".format(name=name))
                     del daemon_failure_time[name]
 
             for thrasher in self.thrashers:
                 if thrasher.exception is not None:
                     self.log("{name} failed".format(name=thrasher.name))
-                    thrasher.stop_and_join()
+                    bark_reason = f"Thrasher {thrasher.name} threw exception {thrasher.exception}"
+                    bark = True
+
+            for proc in self.watched_processes:
+                if proc.exception is not None:
+                    self.log("Remote process %s failed" % proc.id)
+                    bark_reason = f"Remote process {proc.id} threw exception {proc.exception}"
                     bark = True
 
             if bark:
-                self.bark()
+                self.bark(bark_reason)
                 return
 
             sleep(5)
