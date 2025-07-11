@@ -42,9 +42,6 @@ class CephTestRados(WatchedProcess):
         for test_id, daemon in self._daemons.items():
             log.info("Stopping instance %s", test_id)
             daemon.stdin.close()
-        if self._exception:
-            log.info("CHDEBUG: self._exception is not None")
-            raise self._exception
 
 
 @contextlib.contextmanager

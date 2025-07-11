@@ -123,6 +123,7 @@ class DaemonWatchdog(Greenlet):
         daemon_restart = self.config.get("daemon_restart", False)
         daemon_failure_time = {}
         bark_reason: str = ""
+        start_time = time.time()
         while not self.stopping.is_set():
             bark = False
             now = time.time()
@@ -170,6 +171,10 @@ class DaemonWatchdog(Greenlet):
                     self.log("Remote process %s failed" % proc.id)
                     bark_reason = f"Remote process {proc.id} threw exception {proc.exception}"
                     bark = True
+
+            if time.time() - start_time >= 600:
+                bark = True
+                bark_reason = "TEST: 10 minutes have passed so killing"
 
             if bark:
                 self.bark(bark_reason)
