@@ -352,12 +352,12 @@ def task(ctx, config):
                 manager.wait_for_clean()
                 manager.wait_for_all_osds_up(timeout=1800)
 
+            if watched_process.exception:
+                raise watched_process.exception
+
             for pool in created_pools:
                 manager.wait_snap_trimming_complete(pool)
                 manager.remove_pool(pool)
-
-            if watched_process.exception:
-                raise watched_process.exception
 
     running = gevent.spawn(thread)
 
