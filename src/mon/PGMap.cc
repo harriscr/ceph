@@ -57,7 +57,7 @@ void PGMapDigest::encode(bufferlist& bl, uint64_t features) const
 {
   // NOTE: see PGMap::encode_digest
   uint8_t v = 5;
-  assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
+  ceph_assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
   ENCODE_START(v, 1, bl);
   encode(num_pg, bl);
   encode(num_pg_active, bl);
@@ -84,7 +84,7 @@ void PGMapDigest::encode(bufferlist& bl, uint64_t features) const
 void PGMapDigest::decode(bufferlist::const_iterator& p)
 {
   DECODE_START(5, p);
-  assert(struct_v >= 4);
+  ceph_assert(struct_v >= 4);
   decode(num_pg, p);
   decode(num_pg_active, p);
   decode(num_pg_unknown, p);
@@ -3313,6 +3313,10 @@ void PGMap::get_health_checks(
         summary += " experiencing stalled read in wal device of BlueFS";
       } else if (asum.first == "DB_DEVICE_STALLED_READ_ALERT") {
         summary += " experiencing stalled read in db device of BlueFS";
+      } else if (asum.first.find("_DISCARD_QUEUE") != std::string::npos) {
+	for (auto str : asum.second.second) {
+	  summary += str;
+	}
       }
 
       auto& d = checks->add(asum.first, HEALTH_WARN, summary, asum.second.first);

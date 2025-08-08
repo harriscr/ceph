@@ -216,7 +216,7 @@ BtreeBackrefManager::new_mapping(
                    t, addr, len, key,
                    pos.get_key(), pos.get_val().len,
                    pos.get_val());
-	    ceph_abort("not possible for the backref tree");
+	    ceph_abort_msg("not possible for the backref tree");
 	    return BackrefBtree::iterate_repeat_ret_inner(
 	      interruptible::ready_future_marker{},
 	      seastar::stop_iteration::no);
@@ -526,7 +526,7 @@ BtreeBackrefManager::remove_mapping(
 	return btree.remove(
 	  c,
 	  iter
-	).si_then([ret] {
+	).si_then([ret](auto) {
 	  return ret;
 	});
       });

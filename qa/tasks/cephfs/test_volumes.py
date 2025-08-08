@@ -10,6 +10,7 @@ import unittest
 from hashlib import md5
 from textwrap import dedent
 from io import StringIO
+from pathlib import Path
 
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 from tasks.cephfs.fuse_mount import FuseMount
@@ -244,7 +245,7 @@ class TestVolumesHelper(CephFSTestCase):
         # remove the leading '/', and trailing whitespaces
         return path[1:].rstrip()
 
-    def  _get_subvolume_info(self, vol_name, subvol_name, group_name=None):
+    def _get_subvolume_info(self, vol_name, subvol_name, group_name=None):
         args = ["subvolume", "info", vol_name, subvol_name]
         if group_name:
             args.append(group_name)
@@ -428,6 +429,114 @@ class TestVolumesHelper(CephFSTestCase):
         except json.decoder.JSONDecodeError:
             data = None
         return data
+
+    def _cleanup_subvolumes_and_snapshots(self, group, subvolname, snapshot, root_snapped=False):
+        for i in range(1, 26):
+            self._fs_cmd("subvolume", "snapshot", "rm", self.volname, f"{subvolname}_{i}", f"{snapshot}_1", group)
+        for i in range(1, 26):
+            self._fs_cmd("subvolume", "rm", self.volname, f"{subvolname}_{i}", group)
+        self._fs_cmd("subvolumegroup", "rm", self.volname, group)
+        if root_snapped:
+            self.mount_a.run_shell(['sudo', 'rmdir', './.snap/root_s1'])
+            self.mount_a.run_shell(['sudo', 'rmdir', './.snap/root_s2'])
+
+    def _create_subvolumes_and_snapshots(self, group, subvolname, snapshot, snap_root=False):
+        # create group.
+        self._fs_cmd("subvolumegroup", "create", self.volname, group)
+
+        # create 25 subvolumes in group.
+        for i in range(1, 26):
+            self._fs_cmd("subvolume", "create", self.volname, f"{subvolname}_{i}", group, "--mode=777")
+
+        # Take root snapshot if required
+        if snap_root:
+            self.mount_a.run_shell(['mkdir', './.snap/root_s1'])
+            self.mount_a.run_shell(['touch', './file1'])
+            self.mount_a.run_shell(['mkdir', './.snap/root_s2'])
+            self.mount_a.run_shell(['touch', './file2'])
+
+        # create a snapshot of each subvolume
+        for i in range(1, 26):
+            self._fs_cmd("subvolume", "snapshot", "create", self.volname, f"{subvolname}_{i}", f"{snapshot}_1", group)
+            self._do_subvolume_io(f"{subvolname}_{i}", subvolume_group=f"{group}", number_of_files=1)
+
+    def _verify_old_inodes(self, group, subvolname, mds_use_global_snaprealm_seq_for_subvol, root_snapshot, flush_journal=False):
+        """
+        Verifies number of old inodes as per the config mds_use_global_snaprealm_seq_for_subvol
+        """
+        # get paths to validate old_inodes
+        sv_path = self.get_ceph_cmd_stdout(f'fs subvolume getpath {self.volname} {subvolname} {group}')[1:].strip()
+        sv_path = Path(sv_path) #/volumes/<group>/<subvol>/<uuid>
+        sv_dir_path = sv_path.parent #/volumes/<group>/<subvol>
+        group_path = sv_path.parent.parent #/volumes/<group>
+        volumes_path = sv_path.parent.parent.parent #/volumes
+        root_path = sv_path.parent.parent.parent.parent #/
+
+        # dump inodes to validate old_inodes
+        subvol_inode = self.mount_a.path_to_ino(sv_dir_path)
+        group_inode = self.mount_a.path_to_ino(group_path)
+        volumes_inode = self.mount_a.path_to_ino(volumes_path)
+        root_inode = self.mount_a.path_to_ino(root_path)
+
+        # Flush journal if asked and then validate
+        # If any parent inode's 'first' has not caught up with global snaprealm's seq number because the
+        # pre_dirty_journal_parents has stopped the propagation of updates in between (say at first=10, global_seq=12),
+        # the first journal flush purges the old_inodes to 0 and the flush command itself initiates the
+        # prediry_journal_parents which again could cow the inode as global_seq > first, so flush the journal
+        # again to drop the number of old_inodes to zero
+        if flush_journal:
+            self.fs.mds_asok(["flush", "journal"])
+            self.fs.mds_asok(["flush", "journal"])
+
+        subvol_inode_dump = self.fs.mds_asok(['dump', 'inode', hex(subvol_inode)])
+        group_inode_dump = self.fs.mds_asok(['dump', 'inode', hex(group_inode)])
+        volumes_inode_dump = self.fs.mds_asok(['dump', 'inode', hex(volumes_inode)])
+        root_inode_dump = self.fs.mds_asok(['dump', 'inode', hex(root_inode)])
+
+        # Validate number of old_inodes
+        if flush_journal:
+            # The config mds_use_global_snaprealm_seq_for_subvol config is an optimization which doesn't
+            # cow the parent inodes if not required. So if the journal is flushed, irrespective of the
+            # config enabled or disabled, the number of old inodes should not change.
+            # old_inodes = number of immediate snapshots + n (to account for parent snaps, in this case root snaps, check the note below)
+
+            # NOTE: The directory inode's first = mdcache->get_global_snaprealm()->get_newest_seq() + 1.
+            # The testcase is creating '/volumes/<group>/<subvol>' directory and then taking two root snapshots.
+            # so, first = 2 for '/volumes' directory inode. The cow happens on this inode with old_inode during
+            # predirty_journal_parents after root snapshot. The number of old_inodes here could vary from 0 to 2?
+            # based on whether predirty_journal_parents has delayed the propgation or not. The following could be
+            # the old_inodes.
+            #     old_inodes = 2 => [2,2], [3,3]
+            #     old_inodes = 1 => [2,4]
+            #     old_inodes = 0 (I have not seen this in my local testing, but I think it's possible)
+            # The purge_stale_snap_data doesn't purge thes old_inodes because realm's snapshot contains root snaps (2,3)
+            # in that range. In conclusion, old_inode count depends if parent has snap or not at the time of directory creation
+            # and as well on the propagation delay.
+            if root_snapshot:
+                self.assertEqual(len(subvol_inode_dump["old_inodes"]), 2) # 1 + 1
+                self.assertTrue(0 <= len(group_inode_dump["old_inodes"]) <= 2) # 0 + n
+                self.assertTrue(0 <= len(volumes_inode_dump["old_inodes"]) <= 2) # 0 + n
+                self.assertEqual(len(root_inode_dump["old_inodes"]), 2) # 2 + 0 (no parent snap for root)
+            else:
+                self.assertEqual(len(subvol_inode_dump["old_inodes"]), 1) # 1 + 0
+                self.assertEqual(len(group_inode_dump["old_inodes"]), 0) # 0 + 0
+                self.assertEqual(len(volumes_inode_dump["old_inodes"]), 0) # 0 + 0
+                self.assertEqual(len(root_inode_dump["old_inodes"]), 0) # 0 + 0
+        elif mds_use_global_snaprealm_seq_for_subvol and not root_snapshot:
+            self.assertGreaterEqual(len(subvol_inode_dump["old_inodes"]), 1)
+            self.assertGreaterEqual(len(group_inode_dump["old_inodes"]), 0)
+            self.assertGreaterEqual(len(volumes_inode_dump["old_inodes"]), 0)
+            self.assertGreaterEqual(len(root_inode_dump["old_inodes"]), 0)
+        elif not mds_use_global_snaprealm_seq_for_subvol and not root_snapshot:
+            self.assertEqual(len(subvol_inode_dump["old_inodes"]), 1)
+            self.assertEqual(len(group_inode_dump["old_inodes"]), 0)
+            self.assertEqual(len(volumes_inode_dump["old_inodes"]), 0)
+            self.assertEqual(len(root_inode_dump["old_inodes"]), 0)
+        elif not mds_use_global_snaprealm_seq_for_subvol and root_snapshot:
+            self.assertGreaterEqual(len(subvol_inode_dump["old_inodes"]), 2)
+            self.assertGreaterEqual(len(group_inode_dump["old_inodes"]), 0)
+            self.assertGreaterEqual(len(volumes_inode_dump["old_inodes"]), 0)
+            self.assertGreaterEqual(len(root_inode_dump["old_inodes"]), 2)
 
     def setUp(self):
         super(TestVolumesHelper, self).setUp()
@@ -2383,12 +2492,33 @@ class TestSubvolumes(TestVolumesHelper):
         # get subvolume metadata
         subvol_info = json.loads(self._get_subvolume_info(self.volname, subvolume))
         self.assertNotEqual(len(subvol_info), 0)
-        self.assertEqual(subvol_info["pool_namespace"], "fsvolumens_" + subvolume)
+        pool_namespace = subvol_info["pool_namespace"]
+        self.assertEqual(pool_namespace, f'fsvolumens___nogroup_{subvolume}')
 
         # remove subvolumes
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
 
         # verify trash dir is clean
+        self._wait_for_trash_empty()
+
+    def test_for_group_name_in_pool_namespace(self):
+        '''
+        Test that subvolume group name is included in the pool namespace of a
+        subvolume.
+        '''
+        sv = self._gen_subvol_name()
+        svg = self._gen_subvol_grp_name()
+        self.run_ceph_cmd(f'fs subvolumegroup create {self.volname} {svg}')
+        self.run_ceph_cmd(f'fs subvolume create {self.volname} {sv} {svg} '
+                          f'--namespace-isolated')
+
+        subvol_info = self._get_subvolume_info(self.volname, sv, svg)
+        subvol_info = json.loads(subvol_info)
+        pool_namespace = subvol_info['pool_namespace']
+        self.assertEqual(pool_namespace, f'fsvolumens__{svg}_{sv}')
+
+        self.run_ceph_cmd(f'fs subvolume rm {self.volname} {sv} {svg}')
+        self.run_ceph_cmd(f'fs subvolumegroup rm {self.volname} {svg}')
         self._wait_for_trash_empty()
 
     def test_subvolume_create_with_auto_cleanup_on_fail(self):
@@ -2866,11 +2996,33 @@ class TestSubvolumes(TestVolumesHelper):
 
         self.assertEqual(subvol_info["earmark"], earmark)
         
+        self.assertNotIn('source', subvol_info)
+
         # remove subvolumes
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
 
         # verify trash dir is clean
         self._wait_for_trash_empty()
+
+    def test_subvol_src_info_with_custom_group(self):
+        '''
+        Test that source info is NOT printed by "subvolume info" command for a
+        subvolume that is not created by cloning even when it is located in a
+        custom group.
+        '''
+        subvol_name = self._gen_subvol_name()
+        group_name = self._gen_subvol_grp_name()
+
+        self.run_ceph_cmd(f'fs subvolumegroup create {self.volname} '
+                          f'{group_name}')
+        self.run_ceph_cmd(f'fs subvolume create {self.volname} {subvol_name} '
+                          f'{group_name}')
+
+        subvol_info = self.get_ceph_cmd_stdout(
+            f'fs subvolume info {self.volname} {subvol_name} {group_name}')
+        subvol_info = json.loads(subvol_info)
+
+        self.assertNotIn('source', subvol_info)
 
     def test_subvolume_ls(self):
         # tests the 'fs subvolume ls' command
@@ -3117,6 +3269,64 @@ class TestSubvolumes(TestVolumesHelper):
         existing_ids = [a['entity'] for a in self.auth_list()]
         self.assertNotIn("client.{0}".format(authid), existing_ids)
         self._fs_cmd("subvolume", "rm", self.volname, subvolume, "--group_name", group)
+        self._fs_cmd("subvolumegroup", "rm", self.volname, group)
+
+    def test_subvolume_deauthorize_with_shared_key(self):
+        """
+        That mon caps are preserved when one cephx key authorized on multiple
+        subvolumes is deauthorized on any of those.
+        """
+        subvolume1 = self._gen_subvol_name()
+        subvolume2 = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        authid = "alice"
+
+        # create group
+        self._fs_cmd("subvolumegroup", "create", self.volname, group)
+
+        # create subvolumes
+        self._fs_cmd("subvolume", "create", self.volname, subvolume1, "--group_name", group)
+        self._fs_cmd("subvolume", "create", self.volname, subvolume2, "--group_name", group)
+
+        # authorize alice authID read-write access to both subvolumes
+        self._fs_cmd("subvolume", "authorize", self.volname, subvolume1, authid,
+                     "--group_name", group)
+        self._fs_cmd("subvolume", "authorize", self.volname, subvolume2, authid,
+                     "--group_name", group)
+
+        # verify autorized-id has access to both subvolumes
+        expected_auth_list = [{'alice': 'rw'}]
+        auth_list1 = json.loads(self._fs_cmd('subvolume', 'authorized_list', self.volname, subvolume1, "--group_name", group))
+        self.assertEqual(expected_auth_list, auth_list1)
+        auth_list2 = json.loads(self._fs_cmd('subvolume', 'authorized_list', self.volname, subvolume2, "--group_name", group))
+        self.assertEqual(expected_auth_list, auth_list2)
+
+        # check mon caps for authid
+        expected_mon_caps = 'allow r'
+        full_caps = json.loads(self._raw_cmd("auth", "get", "client.alice", "--format=json-pretty"))
+        self.assertEqual(expected_mon_caps, full_caps[0]['caps']['mon'])
+
+        # deauthorize guest1 authID
+        self._fs_cmd("subvolume", "deauthorize", self.volname, subvolume2, authid,
+                     "--group_name", group)
+
+        # verify autorized-id has access to subvolume1 only
+        expected_auth_list = [{'alice': 'rw'}]
+        auth_list1 = json.loads(self._fs_cmd('subvolume', 'authorized_list', self.volname, subvolume1, "--group_name", group))
+        self.assertEqual(expected_auth_list, auth_list1)
+        auth_list2 = json.loads(self._fs_cmd('subvolume', 'authorized_list', self.volname, subvolume2, "--group_name", group))
+        self.assertEqual([], auth_list2)
+
+        # check mon caps still hold for authid
+        expected_mon_caps = 'allow r'
+        full_caps = json.loads(self._raw_cmd("auth", "get", "client.alice", "--format=json-pretty"))
+        self.assertEqual(expected_mon_caps, full_caps[0]['caps']['mon'])
+
+        # cleanup
+        self._fs_cmd("subvolume", "deauthorize", self.volname, subvolume1, authid,
+                     "--group_name", group)
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume1, "--group_name", group)
+        self._fs_cmd("subvolume", "rm", self.volname, subvolume2, "--group_name", group)
         self._fs_cmd("subvolumegroup", "rm", self.volname, group)
 
     def test_multitenant_subvolumes(self):
@@ -6482,6 +6692,131 @@ class TestSubvolumeSnapshots(TestVolumesHelper):
         # Clean tmp config file
         self.mount_a.run_shell(['sudo', 'rm', '-f', tmp_meta_path], omit_sudo=False)
 
+    def test_subvolume_snapshot_with_use_global_snaprealm_seq_config_disabled(self):
+        """
+        To verify that the subvolume snapshots doesn't unnecessarily cow old inodes of
+        parent directories of subvolume snapshot path when mds_use_global_snaprealm_seq_for_subvol
+        is disabled
+        """
+
+        # Disable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', False)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'false')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", False, False)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+    def test_subvolume_snapshot_with_use_global_snaprealm_seq_config_enabled(self):
+        """
+        To verify that the subvolume snapshots unnecessarily cow old inodes of parent
+        directories of subvolume snapshot path when mds_use_global_snaprealm_seq_for_subvol
+        is enabled
+        """
+
+        # Enable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', True)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'true')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", True, False)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+    def test_root_snapshot_with_use_global_snaprealm_seq_config_disabled(self):
+        """
+        To verify that the snapshots between root and subvolume snapshot directory triggers cow of
+        old inodes based on global snaprealm's seq number for snpashots between root and subvolume
+        directory. Also verify, it uses subvolume snaprealm's seq number for subvolume snapshots.
+        """
+
+        # Disable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', False)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'false')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot, True)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", False, True)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot, True)
+
+    def test_subvolume_snapshot_with_use_global_snaprealm_seq_config_disabled_with_journal_flush(self):
+        """
+        To verify that the stale old inodes get trimmed during journal flush when the config
+        mds_use_global_snaprealm_seq_for_subvol is disabled
+        """
+
+        # Disable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', False)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'false')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot, False)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", False, False, True)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+    def test_subvolume_snapshot_with_use_global_snaprealm_seq_config_enabled_with_journal_flush(self):
+        """
+        To verify that the stale old inodes get trimmed during journal flush even when the config
+        mds_use_global_snaprealm_seq_for_subvol is enabled
+        """
+
+        # Enable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', True)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'true')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot, False)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", True, False, True)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot)
+
+    def test_root_snapshot_with_use_global_snaprealm_seq_config_disabled_with_journal_flush(self):
+        """
+        To verify that the stale old inodes get trimmed during journal flush even when the config
+        mds_use_global_snaprealm_seq_for_subvol is disabled and root snapshot
+        """
+
+        # Disable the config
+        self.config_set('mds', 'mds_use_global_snaprealm_seq_for_subvol', False)
+        self.assertEqual(self.config_get('mds', 'mds_use_global_snaprealm_seq_for_subvol'), 'false')
+
+        subvolname = self._gen_subvol_name()
+        group = self._gen_subvol_grp_name()
+        snapshot = self._gen_subvol_snap_name()
+
+        self._create_subvolumes_and_snapshots(group, subvolname, snapshot, True)
+
+        self._verify_old_inodes(group, f"{subvolname}_1", False, True, True)
+
+        # cleanup
+        self._cleanup_subvolumes_and_snapshots(group, subvolname, snapshot, True)
+
 
 class TestSubvolumeSnapshotGetpath(TestVolumesHelper):
 
@@ -6731,6 +7066,7 @@ class TestSubvolumeSnapshotClones(TestVolumesHelper):
         # remove snapshot
         self._fs_cmd("subvolume", "snapshot", "rm", self.volname, subvolume, snapshot)
 
+        # actual testing begins now...
         subvol_info = json.loads(self._get_subvolume_info(self.volname, clone))
         if len(subvol_info) == 0:
             raise RuntimeError("Expected the 'fs subvolume info' command to list metadata of subvolume")
@@ -6740,12 +7076,47 @@ class TestSubvolumeSnapshotClones(TestVolumesHelper):
         if subvol_info["type"] != "clone":
             raise RuntimeError("type should be set to clone")
 
+        self.assertEqual(subvol_info['source']['volume'], self.volname)
+        self.assertEqual(subvol_info['source']['subvolume'], subvolume)
+        self.assertEqual(subvol_info['source']['snapshot'], snapshot)
+        self.assertEqual(subvol_info['source']['group'], '_nogroup')
+
         # remove subvolumes
         self._fs_cmd("subvolume", "rm", self.volname, subvolume)
         self._fs_cmd("subvolume", "rm", self.volname, clone)
 
         # verify trash dir is clean
         self._wait_for_trash_empty()
+
+    def test_clone_src_info_with_custom_group(self):
+        '''
+        Test that clone's source subvolume's group is printed properly when
+        "subvolume info" command is run for clone.
+        '''
+        subvol_name = self._gen_subvol_name()
+        group_name = self._gen_subvol_grp_name()
+        snap_name = self._gen_subvol_snap_name()
+        clone_name = self._gen_subvol_clone_name()
+
+        self.run_ceph_cmd(f'fs subvolumegroup create {self.volname} '
+                          f'{group_name} --mode=777')
+        self.run_ceph_cmd(f'fs subvolume create {self.volname} {subvol_name} '
+                          f'{group_name} --mode=777')
+        self._do_subvolume_io(subvol_name, group_name, number_of_files=1)
+        self.run_ceph_cmd(f'fs subvolume snapshot create {self.volname} '
+                          f'{subvol_name} {snap_name} {group_name}')
+        self.run_ceph_cmd(f'fs subvolume snapshot clone {self.volname} '
+                          f'{subvol_name} {snap_name} {clone_name} '
+                          f'--group-name {group_name}')
+        self._wait_for_clone_to_complete(clone_name)
+
+        subvol_info = self.get_ceph_cmd_stdout(
+            f'fs subvolume info {self.volname} {clone_name}')
+        subvol_info = json.loads(subvol_info)
+        self.assertEqual(subvol_info['source']['volume'], self.volname)
+        self.assertEqual(subvol_info['source']['subvolume'], subvol_name)
+        self.assertEqual(subvol_info['source']['snapshot'], snap_name)
+        self.assertEqual(subvol_info['source']['group'], group_name)
 
     def test_subvolume_snapshot_info_without_snapshot_clone(self):
         """

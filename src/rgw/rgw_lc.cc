@@ -25,6 +25,7 @@
 #include "rgw_perf_counters.h"
 #include "rgw_common.h"
 #include "rgw_bucket.h"
+#include "rgw_bucket_layout.h"
 #include "rgw_lc.h"
 #include "rgw_zone.h"
 #include "rgw_string.h"
@@ -348,6 +349,19 @@ static bool pass_object_lock_check(rgw::sal::Driver* driver, rgw::sal::Object* o
   }
 }
 
+/**
+ * Determines whether to use unordered listing for lifecycle processing.
+ *
+ * For buckets with low shard counts, ordered listing is preferred due to better
+ * performance
+ *
+ * For buckets with high shard counts, unordered listing is preferred to avoid
+ * excess OSD requests
+ */
+static bool should_list_unordered(const rgw::bucket_index_layout_generation& current_index, uint64_t threshold) {
+  return current_index.layout.type == rgw::BucketIndexType::Normal
+    && rgw::num_shards(current_index.layout.normal) > threshold;
+}
 class LCObjsLister {
   rgw::sal::Driver* driver;
   rgw::sal::Bucket* bucket;
@@ -363,7 +377,13 @@ public:
   LCObjsLister(rgw::sal::Driver* _driver, rgw::sal::Bucket* _bucket) :
       driver(_driver), bucket(_bucket) {
     list_params.list_versions = bucket->versioned();
-    list_params.allow_unordered = true; // XXX can be unconditionally true, so long as all versions of one object are assured to be on one shard and always ordered on that shard (true today in RADOS)
+
+    CephContext* cct = driver->ctx();
+    uint64_t threshold = cct->_conf.get_val<uint64_t>("rgw_lc_ordered_list_threshold");
+
+    const auto& current_index = bucket->get_info().layout.current_index;
+    list_params.allow_unordered = should_list_unordered(current_index, threshold);
+
     delay_ms = driver->ctx()->_conf.get_val<int64_t>("rgw_lc_thread_delay");
   }
 
@@ -377,7 +397,9 @@ public:
   }
 
   int fetch(const DoutPrefixProvider *dpp) {
-    int ret = bucket->list(dpp, list_params, 1000, list_results, null_yield);
+    CephContext* cct = dpp->get_cct();
+    int cnt = cct->_conf.get_val<uint64_t>("rgw_lc_list_cnt");
+    int ret = bucket->list(dpp, list_params, cnt, list_results, null_yield);
     if (ret < 0) {
       return ret;
     }
@@ -623,10 +645,15 @@ static int remove_expired_obj(const DoutPrefixProvider* dpp,
   auto obj = oc.bucket->get_object(obj_key);
   ret = obj->load_obj_state(dpp, null_yield, true);
   if (ret < 0) {
-    ldpp_dout(oc.dpp, 0) <<
-      fmt::format("ERROR: get_obj_state() failed in {} for object k={} error r={}",
-		  __func__, oc.o.key.to_string(), ret) << dendl;
-    return ret;
+    /* for delete markers, we expect load_obj_state() to "fail"
+     * with -ENOENT */
+    if (! (o.is_delete_marker() &&
+	   (ret == -ENOENT))) {
+      ldpp_dout(oc.dpp, 0) <<
+	fmt::format("ERROR: get_obj_state() failed in {} for object k={} error r={}",
+		    __func__, oc.o.key.to_string(), ret) << dendl;
+      return ret;
+    }
   }
 
   auto have_notify = !event_types.empty();
@@ -732,19 +759,19 @@ public:
 }; /* LCOpRule */
 
 using WorkItem =
-  boost::variant<void*,
-		 /* out-of-line delete */
-		 std::tuple<LCOpRule, rgw_bucket_dir_entry>,
-		 /* uncompleted MPU expiration */
-		 std::tuple<lc_op, rgw_bucket_dir_entry>,
-		 rgw_bucket_dir_entry>;
+  std::variant<void*,
+	       /* out-of-line delete */
+	       std::tuple<LCOpRule, rgw_bucket_dir_entry>,
+	       /* uncompleted MPU expiration */
+	       std::tuple<lc_op, rgw_bucket_dir_entry>,
+	       rgw_bucket_dir_entry>;
 
 class WorkQ : public Thread
 {
 public:
   using unique_lock = std::unique_lock<std::mutex>;
   using work_f = std::function<void(RGWLC::LCWorker*, WorkQ*, WorkItem&)>;
-  using dequeue_result = boost::variant<void*, WorkItem>;
+  using dequeue_result = std::variant<void*, WorkItem>;
 
   static constexpr uint32_t FLAG_NONE =        0x0000;
   static constexpr uint32_t FLAG_EWAIT_SYNC =  0x0001;
@@ -827,11 +854,11 @@ private:
   void* entry() override {
     while (!wk->get_lc()->going_down()) {
       auto item = dequeue();
-      if (item.which() == 0) {
+      if (item.index() == 0) {
 	/* going down */
 	break;
       }
-      f(wk, this, boost::get<WorkItem>(item));
+      f(wk, this, std::get<WorkItem>(item));
     }
     return nullptr;
   }
@@ -903,13 +930,18 @@ int RGWLC::handle_multipart_expiration(rgw::sal::Bucket* target,
   /* lifecycle processing does not depend on total order, so can
    * take advantage of unordered listing optimizations--such as
    * operating on one shard at a time */
-  params.allow_unordered = true;
+
+  uint64_t threshold = cct->_conf.get_val<uint64_t>("rgw_lc_ordered_list_threshold");
+
+  const auto& current_index = target->get_info().layout.current_index;
+  params.allow_unordered = should_list_unordered(current_index, threshold);
+
   params.ns = RGW_OBJ_NS_MULTIPART;
   params.access_list_filter = MultipartMetaFilter;
 
   auto pf = [&](RGWLC::LCWorker *wk, WorkQ *wq, WorkItem &wi) {
     int ret{0};
-    auto wt = boost::get<std::tuple<lc_op, rgw_bucket_dir_entry>>(wi);
+    auto wt = std::get<std::tuple<lc_op, rgw_bucket_dir_entry>>(wi);
     auto& [rule, obj] = wt;
 
     if (obj_has_expired(this, cct, obj.meta.mtime, rule.mp_expiration)) {
@@ -1280,13 +1312,14 @@ public:
 			<< oc.wq->thr_name() << dendl;
       return false;
     }
+    /* don't remove the delete marker if that would expose a non-current
+     * version as current */
     if (oc.next_has_same_name(o.key.name)) {
       ldpp_dout(dpp, 20) << __func__ << "(): key=" << o.key
-			<< ": next is same object, skipping "
+			<< ": dm expiration would expose a non-current version, skipping "
 			<< oc.wq->thr_name() << dendl;
       return false;
     }
-
     *exp_time = real_clock::now();
 
     return true;
@@ -1782,7 +1815,7 @@ int RGWLC::bucket_lc_process(string& shard_id, LCWorker* worker,
 
   auto pf = [&bucket_name](RGWLC::LCWorker* wk, WorkQ* wq, WorkItem& wi) {
     auto wt =
-      boost::get<std::tuple<LCOpRule, rgw_bucket_dir_entry>>(wi);
+      std::get<std::tuple<LCOpRule, rgw_bucket_dir_entry>>(wi);
     auto& [op_rule, o] = wt;
 
     ldpp_dout(wk->get_lc(), 20)
@@ -1954,7 +1987,7 @@ int RGWLC::bucket_lc_post(int index, int max_lock_sec,
           << obj_names[index] << dendl;
     }
 clean:
-    lock->unlock();
+    lock->unlock(this, null_yield);
     ldpp_dout(this, 20) << "RGWLC::bucket_lc_post() unlock "
 			<< obj_names[index] << dendl;
     return 0;
@@ -2099,6 +2132,19 @@ time_t RGWLC::thread_stop_at()
   return time(nullptr) + interval;
 }
 
+// unique_lock expects an unlock() taking no arguments, but
+// LCSerializer::unlock() requires two. create an adapter that binds these
+// additional args
+struct LCLockAdapter {
+  rgw::sal::LCSerializer& serializer;
+  const DoutPrefixProvider* dpp = nullptr;
+  optional_yield y;
+
+  void unlock() {
+    serializer.unlock(dpp, y);
+  }
+};
+
 int RGWLC::process_bucket(int index, int max_lock_secs, LCWorker* worker,
 			  const std::string& bucket_entry_marker,
 			  bool once = false)
@@ -2126,8 +2172,8 @@ int RGWLC::process_bucket(int index, int max_lock_secs, LCWorker* worker,
   if (ret < 0)
     return 0;
 
-  std::unique_lock<rgw::sal::LCSerializer> lock(
-    *(serializer.get()), std::adopt_lock);
+  auto lock_adapter = LCLockAdapter{*serializer, this, null_yield};
+  std::unique_lock<LCLockAdapter> lock(lock_adapter, std::adopt_lock);
 
   rgw::sal::LCEntry entry;
   ret = sal_lc->get_entry(this, null_yield, obj_names[index],
@@ -2466,7 +2512,7 @@ int RGWLC::process(int index, int max_lock_secs, LCWorker* worker,
 
     /* drop lock so other instances can make progress while this
      * bucket is being processed */
-    lock->unlock();
+    lock->unlock(this, null_yield);
     ret = bucket_lc_process(entry.bucket, worker, thread_stop_at(), once);
     ldpp_dout(this, 5) << "RGWLC::process(): END entry 2: " << entry
       << " index: " << index << " worker ix: " << worker->ix << " ret: " << ret << dendl;
@@ -2513,7 +2559,7 @@ int RGWLC::process(int index, int max_lock_secs, LCWorker* worker,
   } while(1 && !once && !going_down());
 
 exit:
-  lock->unlock();
+  lock->unlock(this, null_yield);
   return 0;
 }
 
@@ -2682,7 +2728,7 @@ static int guard_lc_modify(const DoutPrefixProvider *dpp,
     }
     break;
   } while(true);
-  lock->unlock();
+  lock->unlock(dpp, null_yield);
   return ret;
 }
 

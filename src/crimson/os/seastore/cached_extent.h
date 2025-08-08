@@ -264,6 +264,13 @@ private:
   map_t buffer_map;
 };
 
+enum class extent_2q_state_t : uint8_t {
+  Fresh = 0,
+  WarmIn,
+  Hot,
+  Max
+};
+
 class ExtentIndex;
 class CachedExtent
   : public boost::intrusive_ref_counter<
@@ -299,7 +306,7 @@ class CachedExtent
   uint32_t last_committed_crc = 0;
 
   // Points at the prior stable version while in state MUTATION_PENDING
-  // or is rewriting (in state INITIAL_PENDING).
+  // or is rewriting (in state INITIAL_WRITE_PENDING).
   CachedExtentRef prior_instance;
 
   // time of the last modification
@@ -311,7 +318,6 @@ public:
             placement_hint_t hint,
             rewrite_gen_t gen,
 	    transaction_id_t trans_id) {
-    assert(gen == NULL_GENERATION || is_rewrite_generation(gen));
     state = _state;
     set_paddr(paddr);
     user_hint = hint;
@@ -469,7 +475,6 @@ public:
     out << "CachedExtent(addr=" << this
 	<< ", type=" << get_type()
 	<< ", trans=" << pending_for_transaction
-	<< ", pending_io=" << is_pending_io()
 	<< ", version=" << version
 	<< ", dirty_from=" << dirty_from
 	<< ", modify_time=" << sea_time_point_printer_t{modify_time}
@@ -481,7 +486,13 @@ public:
 	<< ", last_committed_crc=" << last_committed_crc
 	<< ", refcount=" << use_count()
 	<< ", user_hint=" << user_hint
-	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation};
+	<< ", rewrite_gen=" << rewrite_gen_printer_t{rewrite_generation}
+	<< ", pending_io=";
+    if (is_pending_io()) {
+      out << io_wait->from_state;
+    } else {
+      out << "N/A";
+    }
     if (is_valid() && is_fully_loaded() && !is_stable_clean_pending()) {
       print_detail(out);
     }
@@ -544,7 +555,7 @@ public:
   }
 
   /// Returns true if extent can be mutated in an open transaction,
-  /// normally equivalent to !is_data_stable.
+  /// equivalent to !is_data_stable.
   bool is_mutable() const {
     return state == extent_state_t::INITIAL_WRITE_PENDING ||
       state == extent_state_t::MUTATION_PENDING ||
@@ -552,40 +563,9 @@ public:
   }
 
   /// Returns true if extent is part of an open transaction,
-  /// normally equivalent to !is_stable.
+  /// equivalent to !is_stable.
   bool is_pending() const {
     return is_mutable() || state == extent_state_t::EXIST_CLEAN;
-  }
-
-  bool is_rewrite() {
-    return is_initial_pending() && get_prior_instance();
-  }
-
-  /// Returns true if extent is stable, written and shared among transactions
-  bool is_stable_written() const {
-    return state == extent_state_t::CLEAN
-           || state == extent_state_t::DIRTY;
-  }
-
-  bool is_stable_writting() const {
-    // mutated/INITIAL_PENDING and under-io extents are already
-    // stable and visible, see prepare_record().
-    //
-    // XXX: It might be good to mark this case as DIRTY/CLEAN from the definition,
-    // which probably can make things simpler.
-    return (has_mutation() || is_initial_pending()) && is_pending_io();
-  }
-
-  /// Returns true if extent is stable and shared among transactions,
-  /// normally equivalent to !is_pending
-  bool is_stable() const {
-    return is_stable_written() || is_stable_writting();
-  }
-
-  /// Returns true if extent can not be mutated,
-  /// normally equivalent to !is_mutable.
-  bool is_data_stable() const {
-    return is_stable() || is_exist_clean();
   }
 
   /// Returns true if extent has a pending delta
@@ -603,30 +583,8 @@ public:
     return state == extent_state_t::INITIAL_WRITE_PENDING;
   }
 
-  /// Returns iff extent has deltas on disk or pending
-  bool has_delta() const {
-    ceph_assert(is_valid());
-    if (state == extent_state_t::INITIAL_WRITE_PENDING
-        || state == extent_state_t::CLEAN
-        || state == extent_state_t::EXIST_CLEAN) {
-      return false;
-    } else {
-      assert(state == extent_state_t::MUTATION_PENDING
-             || state == extent_state_t::DIRTY
-             || state == extent_state_t::EXIST_MUTATION_PENDING);
-      return true;
-    }
-  }
-
-  // Returs true if extent is stable and clean
-  bool is_stable_clean() const {
-    ceph_assert(is_valid());
-    return state == extent_state_t::CLEAN;
-  }
-
-  // Returns true if the buffer is still loading
-  bool is_stable_clean_pending() const {
-    return is_stable_clean() && is_pending_io();
+  bool is_rewrite() {
+    return is_initial_pending() && get_prior_instance();
   }
 
   /// Ruturns true if data is persisted while metadata isn't
@@ -637,6 +595,39 @@ public:
   /// Returns true if the extent with EXTIST_CLEAN is modified
   bool is_exist_mutation_pending() const {
     return state == extent_state_t::EXIST_MUTATION_PENDING;
+  }
+
+  /// Returns true iff extent is stable (shared among transactions),
+  /// equivalent to !is_pending()
+  bool is_stable() const {
+    return state == extent_state_t::CLEAN
+        || state == extent_state_t::DIRTY;
+  }
+
+  /// Returns true iff extent is stable and not io-pending
+  bool is_stable_ready() const {
+    return is_stable() && !is_pending_io();
+  }
+
+  /// Returns true if extent can not be mutated,
+  /// equivalent to !is_mutable.
+  bool is_data_stable() const {
+    return is_stable() || is_exist_clean();
+  }
+
+  /// Returns iff extent is DIRTY
+  bool is_stable_dirty() const {
+    return state == extent_state_t::DIRTY;
+  }
+
+  /// Returns iff extent is CLEAN
+  bool is_stable_clean() const {
+    return state == extent_state_t::CLEAN;
+  }
+
+  /// Returns iff extent is CLEAN and io-pending
+  bool is_stable_clean_pending() const {
+    return is_stable_clean() && is_pending_io();
   }
 
   /// Returns true if extent has not been superceded or retired
@@ -655,12 +646,12 @@ public:
   }
 
   bool is_pending_io() const {
-    return !!io_wait_promise;
+    return io_wait.has_value();
   }
 
   /// Return journal location of oldest relevant delta, only valid while DIRTY
   auto get_dirty_from() const {
-    ceph_assert(has_delta());
+    ceph_assert(is_stable_dirty());
     return dirty_from;
   }
 
@@ -721,7 +712,8 @@ public:
     return loaded_length;
   }
 
-  /// Returns version, get_version() == 0 iff !has_delta()
+  /// Returns version, get_version() == 0
+  /// iff CLEAN/EXIST_CLEAN/INITIAL_WRITE_PENDING
   extent_version_t get_version() const {
     return version;
   }
@@ -772,8 +764,6 @@ public:
 
   /// assign the target rewrite generation for the followup rewrite
   void set_target_rewrite_generation(rewrite_gen_t gen) {
-    assert(is_target_rewrite_generation(gen));
-
     user_hint = placement_hint_t::REWRITE;
     rewrite_generation = gen;
   }
@@ -832,6 +822,28 @@ public:
   std::pair<bool, viewable_state_t>
   is_viewable_by_trans(Transaction &t);
 
+  extent_2q_state_t get_2q_state() const {
+    assert("2Q" == crimson::common::get_conf<std::string>
+	   ("seastore_cachepin_type"));
+    return cache_state;
+  }
+
+  void set_2q_state(extent_2q_state_t state) {
+    assert("2Q" == crimson::common::get_conf<std::string>
+	   ("seastore_cachepin_type"));
+    assert(state < extent_2q_state_t::Max);
+    cache_state = state;
+  }
+
+  extent_len_t get_last_touch_end() const {
+    return last_touch_end;
+  }
+
+  void set_last_touch_end(extent_len_t touch_end) {
+    assert(touch_end != 0);
+    last_touch_end = touch_end;
+  }
+
 private:
   template <typename T>
   friend class read_set_item_t;
@@ -854,8 +866,12 @@ private:
   friend class ExtentIndex;
   friend class Transaction;
 
-  bool is_linked() {
+  bool is_linked_to_index() {
     return extent_index_hook.is_linked();
+  }
+
+  bool is_linked_to_list() {
+    return primary_ref_list_hook.is_linked();
   }
 
   /// hook for intrusive ref list (mainly dirty or lru list)
@@ -897,25 +913,30 @@ private:
   /// relative address before ool write, used to update mapping
   std::optional<paddr_t> prior_poffset = std::nullopt;
 
-  /// used to wait while in-progress commit completes
-  std::optional<seastar::shared_promise<>> io_wait_promise;
+  struct io_wait_t {
+    seastar::shared_promise<> pr;
+    extent_state_t from_state;
+  };
+  std::optional<io_wait_t> io_wait;
 
-  void set_io_wait() {
-    ceph_assert(!io_wait_promise);
-    io_wait_promise = seastar::shared_promise<>();
+  void set_io_wait(extent_state_t new_state) {
+    ceph_assert(!io_wait);
+    io_wait.emplace(seastar::shared_promise<>(), state);
+    state = new_state;
+    assert(is_data_stable());
   }
 
   void complete_io() {
-    ceph_assert(io_wait_promise);
-    io_wait_promise->set_value();
-    io_wait_promise = std::nullopt;
+    ceph_assert(io_wait.has_value());
+    io_wait->pr.set_value();
+    io_wait = std::nullopt;
   }
 
   seastar::future<> wait_io() {
-    if (!io_wait_promise) {
+    if (!io_wait) {
       return seastar::now();
     } else {
-      return io_wait_promise->get_shared_future();
+      return io_wait->pr.get_shared_future();
     }
   }
 
@@ -929,6 +950,13 @@ private:
   // the target rewrite generation for the followup rewrite
   // or the rewrite generation for the fresh write
   rewrite_gen_t rewrite_generation = NULL_GENERATION;
+
+  // save the end offset of the most recent of extent touching,
+  // see Cache::touch_extent_by_range() and ExtentPinboardTwoQ.
+  extent_len_t last_touch_end = 0;
+
+  // This field is unused when the ExtentPinboard use LRU algorithm
+  extent_2q_state_t cache_state = extent_2q_state_t::Fresh;
 
 protected:
   trans_view_set_t mutation_pending_extents;
@@ -1020,6 +1048,9 @@ protected:
   }
 
   friend class Cache;
+  friend class ExtentQueue;
+  friend class ExtentPinboardLRU;
+  friend class ExtentPinboardTwoQ;
   template <typename T, typename... Args>
   static TCachedExtentRef<T> make_cached_extent_ref(
     Args&&... args) {
@@ -1279,7 +1310,7 @@ public:
 
   void erase(CachedExtent &extent) {
     assert(extent.parent_index);
-    assert(extent.is_linked());
+    assert(extent.is_linked_to_index());
     [[maybe_unused]] auto erased = extent_index.erase(
       extent_index.s_iterator_to(extent));
     extent.parent_index = nullptr;
@@ -1354,12 +1385,12 @@ public:
     : CachedExtent(CachedExtent::retired_placeholder_construct_t{}, length) {}
 
   CachedExtentRef duplicate_for_write(Transaction&) final {
-    ceph_abort("Should never happen for a placeholder");
+    ceph_abort_msg("Should never happen for a placeholder");
     return CachedExtentRef();
   }
 
   ceph::bufferlist get_delta() final {
-    ceph_abort("Should never happen for a placeholder");
+    ceph_abort_msg("Should never happen for a placeholder");
     return ceph::bufferlist();
   }
 
@@ -1370,7 +1401,7 @@ public:
 
   void apply_delta_and_adjust_crc(
     paddr_t base, const ceph::bufferlist &bl) final {
-    ceph_abort("Should never happen for a placeholder");
+    ceph_abort_msg("Should never happen for a placeholder");
   }
 
   void on_rewrite(Transaction &, CachedExtent&, extent_len_t) final {}
@@ -1380,7 +1411,7 @@ public:
   }
 
   void on_delta_write(paddr_t record_block_offset) final {
-    ceph_abort("Should never happen for a placeholder");
+    ceph_abort_msg("Should never happen for a placeholder");
   }
 };
 
@@ -1458,12 +1489,12 @@ public:
     extent_len_t len;
   };
   virtual std::optional<modified_region_t> get_modified_region() {
-    ceph_abort("Unsupported");
+    ceph_abort_msg("Unsupported");
     return std::nullopt;
   }
 
   virtual void clear_modified_region() {
-    ceph_abort("Unsupported");
+    ceph_abort_msg("Unsupported");
   }
 
   virtual ~LogicalCachedExtent() {}
@@ -1479,7 +1510,6 @@ protected:
   virtual void logical_on_delta_write() {}
 
   void on_delta_write(paddr_t record_block_offset) final {
-    assert(is_exist_mutation_pending() || get_prior_instance());
     logical_on_delta_write();
   }
 
@@ -1550,3 +1580,24 @@ template <> struct fmt::formatter<crimson::os::seastore::CachedExtent> : fmt::os
 template <> struct fmt::formatter<crimson::os::seastore::CachedExtent::viewable_state_t> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<crimson::os::seastore::LogicalCachedExtent> : fmt::ostream_formatter {};
 #endif
+
+template <>
+struct fmt::formatter<crimson::os::seastore::extent_2q_state_t>
+    : public fmt::formatter<std::string_view> {
+  using State = crimson::os::seastore::extent_2q_state_t;
+  auto format(const State &s, auto &ctx) const {
+    switch (s) {
+    case State::Fresh:
+      return fmt::format_to(ctx.out(), "Fresh");
+    case State::WarmIn:
+      return fmt::format_to(ctx.out(), "WarmIn");
+    case State::Hot:
+      return fmt::format_to(ctx.out(), "Hot");
+    case State::Max:
+      return fmt::format_to(ctx.out(), "Max");
+    default:
+      __builtin_unreachable();
+      return ctx.out();
+    }
+  }
+};

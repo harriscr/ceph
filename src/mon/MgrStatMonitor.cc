@@ -52,9 +52,48 @@ static ostream& _prefix(std::ostream *_dout, Monitor &mon) {
 MgrStatMonitor::MgrStatMonitor(Monitor &mn, Paxos &p, const string& service_name)
   : PaxosService(mn, p, service_name)
 {
+    g_conf().add_observer(this);
 }
 
-MgrStatMonitor::~MgrStatMonitor() = default;
+MgrStatMonitor::~MgrStatMonitor() 
+{
+  g_conf().remove_observer(this);
+}
+
+std::vector<std::string> MgrStatMonitor::get_tracked_keys() const noexcept
+{
+  return {
+    "enable_availability_tracking",
+  };
+}
+
+void MgrStatMonitor::handle_conf_change(
+  const ConfigProxy& conf,
+  const std::set<std::string>& changed)
+{
+  if (changed.count("enable_availability_tracking")) {
+    std::scoped_lock l(lock);
+    bool oldval = enable_availability_tracking;
+    bool newval = g_conf().get_val<bool>("enable_availability_tracking");
+    dout(10) << __func__ << " enable_availability_tracking config option is changed from " 
+             << oldval << " to " << newval
+             << dendl;
+
+    // if fetaure is toggled from off to on, 
+    // reset last_uptime and last_downtime across all pools
+    if (newval > oldval) {
+      utime_t now = ceph_clock_now(); 
+      for (const auto& i : pending_pool_availability) {
+        const auto& poolid = i.first;
+        pending_pool_availability[poolid].last_downtime = now;
+        pending_pool_availability[poolid].last_uptime = now;
+      }
+      dout(20) << __func__ << " reset last_uptime and last_downtime to " 
+               << now << dendl;
+    }
+    enable_availability_tracking = newval;
+  }
+}
 
 void MgrStatMonitor::create_initial()
 {
@@ -66,77 +105,102 @@ void MgrStatMonitor::create_initial()
   encode(service_map, pending_service_map_bl, CEPH_FEATURES_ALL);
 }
 
+void MgrStatMonitor::clear_pool_availability(int64_t poolid)
+{
+  dout(20) << __func__ << dendl;
+  std::scoped_lock l(lock);
+  auto pool_itr = pending_pool_availability.find(poolid);
+  if (pool_itr != pending_pool_availability.end()) {
+    pool_itr->second = PoolAvailability();
+  } else {
+    dout(1) << "failed to clear a non-existing pool: " << poolid << dendl;
+    return; 
+  };
+  dout(20) << __func__ << " cleared availability score for pool: " << poolid << dendl;
+}
+
 void MgrStatMonitor::calc_pool_availability()
 {
   dout(20) << __func__ << dendl;
-  auto pool_avail_end = pool_availability.end();
-  for (const auto& i : digest.pool_pg_unavailable_map) {
-    const auto& poolid = i.first;
-    if (pool_availability.find(poolid) == pool_avail_end){
-      // New Pool so we add.
-      pool_availability.insert({poolid, PoolAvailability()});
-      dout(20) << __func__ << "Adding pool: " << poolid << dendl;
+  std::scoped_lock l(lock);
+
+  // if feature is disabled by user, do not update the uptime 
+  // and downtime, exit early
+  if (!enable_availability_tracking) {
+    dout(20) << __func__ << " tracking availability score is disabled" << dendl;
+    return;
+  }
+
+  // Add new pools from digest
+  for ([[maybe_unused]] const auto& [poolid, _] : digest.pool_pg_unavailable_map) {
+    if (!pool_availability.contains(poolid)) {
+      pool_availability.emplace(poolid, PoolAvailability{});
+      dout(20) << fmt::format("{}: Adding pool: {}",
+                              __func__, poolid) << dendl;
     }
   }
+
+  // Remove unavailable pools
+  // A pool is removed if it meets either of the following criteria:
+  // 1. It is not present in the digest's pool_pg_unavailable_map.
+  // 2. It is not present in the osdmap (checked via mon.osdmon()->osdmap).
+  std::erase_if(pool_availability, [&](const auto& kv) {
+    const auto& poolid = kv.first;
+
+    if (!digest.pool_pg_unavailable_map.contains(poolid)) {
+      dout(20) << fmt::format("{}: Deleting pool (not in digest): {}",
+                              __func__, poolid) << dendl;
+      return true;
+    }
+    if (!mon.osdmon()->osdmap.have_pg_pool(poolid)) {
+      dout(20) << fmt::format("{}: Deleting pool (not in osdmap): {}",
+                              __func__, poolid) << dendl;
+      return true;
+    }
+    return false;
+  });
+
+  // Update pool availability
   utime_t now(ceph_clock_now());
-  auto pool_unavail_end = digest.pool_pg_unavailable_map.end();
-  for (const auto& i : pool_availability) {
-    const auto& poolid = i.first;
-    if (digest.pool_pg_unavailable_map.find(poolid) ==
-      pool_unavail_end) {
-      // delete none exist pool
-      pool_availability.erase(poolid);
-      dout(20) << __func__ << "Deleting pool: " << poolid << dendl;
-      continue;
-    }
-    if (mon.osdmon()->osdmap.have_pg_pool(poolid)){
-      // Currently, couldn't find an elegant way to get pool name
-      pool_availability[poolid].pool_name = mon.osdmon()->osdmap.get_pool_name(poolid);
-    } else {
-      pool_availability.erase(poolid);
-      dout(20) << __func__ << "pool: " 
-	       << poolid << " no longer exists in osdmap! Deleting pool: " 
-         << poolid << dendl;
-      continue;
-    }
-    if (pool_availability[poolid].is_avail) {
-      if (!digest.pool_pg_unavailable_map[poolid].empty()) {
-        // avail to unavail
-        dout(20) << __func__ 
-		 << ": Pool " << poolid << " status: Available to Unavailable" << dendl;
-        pool_availability[poolid].is_avail = false;
-        pool_availability[poolid].num_failures += 1;
-        pool_availability[poolid].last_downtime = now;
-        pool_availability[poolid].uptime +=
-          now - pool_availability[poolid].last_uptime;
+  for (auto& [poolid, avail] : pool_availability) {
+    avail.pool_name = mon.osdmon()->osdmap.get_pool_name(poolid);
+
+    auto it = digest.pool_pg_unavailable_map.find(poolid);
+    const bool currently_avail = (it != digest.pool_pg_unavailable_map.end()) &&
+                                 it->second.empty();
+
+    if (avail.is_avail) {
+      if (!currently_avail) {            // Available → Unavailable
+        dout(20) << fmt::format("{}: Pool {} status: Available to Unavailable",
+                              __func__, poolid) << dendl;
+        avail.is_avail        = false;
+        ++avail.num_failures;
+        avail.last_downtime   = now;
+        avail.uptime         += now - avail.last_uptime;
       } else {
-        // avail to avail
-        dout(20) << __func__ 
-		 << ": Pool " << poolid << " status: Available to Available" << dendl;
-        pool_availability[poolid].uptime +=
-          now - pool_availability[poolid].last_uptime;
-        pool_availability[poolid].last_uptime = now;
+        // Available to Available
+        dout(20) << fmt::format("{}: Pool {} status: Available to Available",
+                              __func__, poolid) << dendl;
+        avail.uptime         += now - avail.last_uptime;
+        avail.last_uptime     = now;
       }
-    } else {
-      if (!digest.pool_pg_unavailable_map[poolid].empty()) {
-        // unavail to unavail
-        dout(20) << __func__ 
-		 << ": Pool " << poolid << " status: Unavailable to Unavailable" << dendl;
-        pool_availability[poolid].downtime +=
-          now - pool_availability[poolid].last_downtime;
-        pool_availability[poolid].last_downtime = now;
-      } else {
-        // unavail to avail
-        dout(20) << __func__ 
-		 << ": Pool " << poolid << " status: Unavailable to Available" << dendl;
-        pool_availability[poolid].is_avail = true;
-        pool_availability[poolid].last_uptime = now;
-        pool_availability[poolid].uptime +=
-          now - pool_availability[poolid].last_downtime;
+    } else {                             // Unavailable
+      if (currently_avail) {             // Unavailable to Available
+        dout(20) << fmt::format("{}: Pool {} status: Unavailable to Available",
+                              __func__, poolid) << dendl;
+        avail.is_avail        = true;
+        avail.last_uptime     = now;
+        avail.uptime         += now - avail.last_downtime;
+      } else {                           // Unavailable to Unavailable
+        dout(20) << fmt::format("{}: Pool {} status: Unavailable to Unavailable",
+                              __func__, poolid) << dendl;
+        avail.downtime       += now - avail.last_downtime;
+        avail.last_downtime   = now;
       }
     }
+
   }
-  pending_pool_availability.swap(pool_availability);
+  pending_pool_availability = pool_availability;
 }
 
 void MgrStatMonitor::update_from_paxos(bool *need_bootstrap)
@@ -172,7 +236,11 @@ void MgrStatMonitor::update_from_paxos(bool *need_bootstrap)
   check_subs();
   update_logger();
   mon.osdmon()->notify_new_pg_digest();
-  calc_pool_availability();
+
+  // only calculate pool_availability within leader mon
+  if (mon.is_leader()) {
+      calc_pool_availability();
+  }
 }
 
 void MgrStatMonitor::update_logger()
@@ -342,6 +410,7 @@ bool MgrStatMonitor::prepare_report(MonOpRequestRef op)
   dout(20) << "pool_availability:\n";
   JSONFormatter jf(true);
   jf.open_object_section("pool_availability");
+  std::scoped_lock l(lock);
   for (auto& i : pending_pool_availability) {
     jf.dump_object(std::to_string(i.first), i.second);
   }

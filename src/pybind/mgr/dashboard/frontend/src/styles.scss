@@ -1,5 +1,6 @@
 /* You can add global styles to this file, and also import other style files */
 @use './src/styles/defaults' as *;
+@use '@carbon/charts/styles.css' as *;
 
 @import './src/styles/carbon-defaults.scss';
 
@@ -229,4 +230,15 @@ formly-form {
 legend {
   float: none;
   margin-top: 1rem;
+}
+
+// Fix for overridden browser autofill CSS.
+// This needs to be removed when using Carbon forms.
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  box-shadow: 0 0 0 10px white inset !important;
+  -webkit-text-fill-color: inherit !important;
+  transition: background-color 5000s ease-in-out 0s;
 }

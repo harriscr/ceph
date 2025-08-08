@@ -32,8 +32,6 @@ struct ECTransaction {
     bool invalidates_cache = false; // Yes, both are possible
     std::map<hobject_t,extent_set> to_read;
     std::map<hobject_t,extent_set> will_write;
-
-    std::map<hobject_t,ECUtil::HashInfoRef> hash_infos;
   };
 };
 
@@ -181,7 +179,8 @@ struct ECCommon {
       } else {
         os << ", noattrs";
       }
-      os << ", buffers_read=" << buffers_read << ")";
+      os << ", buffers_read=" << buffers_read;
+      os << ", processed_read_requests=" << processed_read_requests << ")";
     }
   };
 
@@ -401,6 +400,14 @@ struct ECCommon {
         const std::list<ec_align_t> &to_read,
         ECUtil::shard_extent_set_t &want_shard_reads);
 
+    void get_want_to_read_all_shards(
+        const std::list<ec_align_t> &to_read,
+        ECUtil::shard_extent_set_t &want_shard_reads);
+    void create_parity_read_buffer(
+        ECUtil::shard_extent_map_t buffers_read,
+        ec_align_t read,
+        bufferlist *outbl);
+
     /// Returns to_read replicas sufficient to reconstruct want
     int get_min_avail_to_read_shards(
         const hobject_t &hoid, ///< [in] object
@@ -531,7 +538,7 @@ struct ECCommon {
             << " temp_cleared=" << temp_cleared
             << " remote_read_result=" << remote_shard_extent_map
             << " pending_commits=" << pending_commits
-            << " plan.to_read=" << plan
+            << " plans=" << plan
             << ")";
       }
     };
@@ -626,30 +633,6 @@ struct ECCommon {
         ec_backend(ec_backend),
         extent_cache(*this, ec_extent_cache_lru, sinfo, cct),
         ec_pdw_write_mode(cct->_conf.get_val<uint64_t>("ec_pdw_write_mode")) {}
-  };
-
-  class UnstableHashInfoRegistry {
-    CephContext *cct;
-    ceph::ErasureCodeInterfaceRef ec_impl;
-    /// If modified, ensure that the ref is held until the update is applied
-    SharedPtrRegistry<hobject_t, ECUtil::HashInfo> registry;
-
-   public:
-    UnstableHashInfoRegistry(
-        CephContext *cct,
-        ceph::ErasureCodeInterfaceRef ec_impl)
-      : cct(cct),
-        ec_impl(std::move(ec_impl)) {}
-
-    ECUtil::HashInfoRef maybe_put_hash_info(
-        const hobject_t &hoid,
-        ECUtil::HashInfo &&hinfo);
-
-    ECUtil::HashInfoRef get_hash_info(
-        const hobject_t &hoid,
-        bool create,
-        const std::map<std::string, ceph::buffer::list, std::less<>> &attrs,
-        uint64_t size);
   };
 };
 

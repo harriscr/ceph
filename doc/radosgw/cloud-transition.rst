@@ -2,17 +2,18 @@
 Cloud Transition
 ================
 
-This feature enables transitioning S3 objects to a remote cloud service as part
-of `object lifecycle <https://docs.aws.amazon.com/AmazonS3/latest/dev/object-lifecycle-mgmt.html>`_
+This feature makes it possible to transition S3 objects to a remote cloud
+service as part of the `object lifecycle
+<https://docs.aws.amazon.com/AmazonS3/latest/dev/object-lifecycle-mgmt.html>`_
 via :ref:`storage_classes`. The transition is unidirectional: data cannot be
-transitioned back from the remote zone. The goal of this feature is to enable
-data transition to multiple cloud providers. The currently supported cloud
-providers are those that are compatible with AWS (S3).
+transitioned back from the remote zone. The purpose of this feature is to
+enable data transition to multiple cloud providers. Cloud providers compatible
+with AWS (S3) are supported.
 
-A special storage class of tier type ``cloud-s3`` or ``cloud-s3-glacier``
-is used to configure the remote cloud S3 object store service to which
-data is transitioned. These are defined in terms of zonegroup placement
-targets and, unlike regular storage classes, do not need a data pool.
+We use a special storage class of tier type ``cloud-s3`` or
+``cloud-s3-glacier`` to configure the remote cloud S3 object store service to
+which data is transitioned. These classes are defined in terms of zonegroup
+placement targets and, unlike regular storage classes, do not need a data pool.
 
 User credentials for the remote cloud object store service must be
 configured. Note that source ACLs will not be preserved. It is possible
@@ -76,7 +77,8 @@ Cloud Transition Specific Configurables
 
 * ``host_style`` (path | virtual)
 
-  Type of host style to be used when accessing the remote cloud S3 service (default: ``path``).
+  Type of host style to be used when accessing the remote cloud S3 service
+  (default: ``path``).
 
 * ``acls`` (array)
 
@@ -84,9 +86,10 @@ Cloud Transition Specific Configurables
 
 * ``acl_mapping`` (container)
 
-  Each ``acl_mapping`` structure contains ``type``, ``source_id``, and ``dest_id``. These
-  define the ACL mutation to be done on each object. An ACL mutation makes it possible to
-  convert a source userid to a destination userid.
+  Each ``acl_mapping`` structure contains ``type``, ``source_id``, and
+  ``dest_id``. These define the ACL mutation to be done on each object. An ACL
+  mutation makes it possible to convert a source userid to a destination
+  userid.
 
 * ``type`` (id | email | uri)
 
@@ -119,7 +122,7 @@ Cloud Transition Specific Configurables
   If ``true``, the metadata of the object transitioned to the cloud service is retained.
   If ``false`` (default), the object is deleted after the transition.
   This option is ignored for current-versioned objects. For more details,
-  refer to the :ref:`Versioned Objects<versioned_objects>` section below.
+  refer to the :ref:`versioned_objects` section below.
 
 
 S3 Specific Configurables
@@ -417,15 +420,13 @@ For versioned and locked objects, similar semantics as that of LifecycleExpirati
 
 Restoring Objects
 -----------------
-The objects transitioned to cloud can now be restored. For more information, refer to 
-`Restoring Objects from Cloud <https://docs.aws.amazon.com/AmazonS3/latest/dev/cloud-restore.html>`_.
+The objects transitioned to cloud can now be restored. For more information, refer to
+:ref:`Restoring Objects from Cloud <radosgw-cloud-restore>`.
 
 
 Future Work
 -----------
 
 * Send presigned redirect or read-through the objects transitioned to cloud.
-
-* Support ``s3:RestoreObject`` operation on cloud transitioned objects.
 
 * Support transition to other cloud providers (like Azure).

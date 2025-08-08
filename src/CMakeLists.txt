@@ -131,7 +131,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10)
       message(FATAL_ERROR "C++20 support for win32 requires a minimum GCC version of 10.")
     endif()
-  elseif(HAVE_SEASTAR)
+  elseif(WITH_CRIMSON)
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
       # see https://tracker.ceph.com/issues/64375 for details
       message(FATAL_ERROR "crimson/seastar require minimum GCC version of 13 for C++20 and coroutine support")
@@ -153,7 +153,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   # cmake does not add '-pie' for executables even if
   # CMAKE_POSITION_INDEPENDENT_CODE is TRUE.
   if(EXE_LINKER_USE_PIE)
-    if (NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT HAVE_SEASTAR)
+    if (NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT WITH_CRIMSON)
       string(APPEND CMAKE_EXE_LINKER_FLAGS " -pie")
     endif()
   endif()
@@ -241,8 +241,8 @@ if(HAVE_INTEL)
   endif()
 endif()
 
-# require c++20
-set(CMAKE_CXX_STANDARD 20)
+# require c++23
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
@@ -290,10 +290,8 @@ endif()
 
 option(ENABLE_COVERAGE "Coverage is enabled" OFF)
 if(${ENABLE_COVERAGE})
-  find_program(HAVE_GCOV gcov)
-  if(NOT HAVE_GCOV)
-    message(FATAL_ERROR "Coverage Enabled but gcov Not Found")
-  endif()
+  find_program(HAVE_GCOV gcov
+    REQUIRED)
   add_compile_options(
     --coverage
     -O0)
@@ -473,20 +471,22 @@ if(WITH_CRIMSON)
       build_dpdk(${CMAKE_BINARY_DIR}/src/dpdk)
     endif()
   endif()
-  list(APPEND Seastar_CXX_FLAGS
-    "-DSEASTAR_NO_EXCEPTION_HACK"
-    "-Wno-error"
-    "-Wno-sign-compare"
-    "-Wno-attributes"
-    "-Wno-pessimizing-move"
-    "-Wno-address-of-packed-member"
-    "-Wno-non-virtual-dtor")
-  set(Seastar_CXX_FLAGS "${Seastar_CXX_FLAGS}" CACHE STRING "" FORCE)
   add_subdirectory(seastar)
   # create the directory so cmake won't complain when looking at the imported
   # target: Seastar exports this directory created at build-time
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/include")
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/seastar/gen/src")
+  target_compile_options(seastar
+  PUBLIC
+    # required by any target that links to seastar
+    "-Wno-non-virtual-dtor"
+  PRIVATE
+    "-DSEASTAR_NO_EXCEPTION_HACK"
+    "-Wno-error"
+    "-Wno-sign-compare"
+    "-Wno-attributes"
+    "-Wno-pessimizing-move"
+    "-Wno-address-of-packed-member")
   add_subdirectory(crimson)
 endif()
 
@@ -875,8 +875,6 @@ if(WITH_TESTS)
   add_subdirectory(test)
 endif()
 
-add_subdirectory(crypto)
-
 if(WITH_TESTS)
   install(PROGRAMS
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ceph-debugpack
@@ -1000,7 +998,8 @@ if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
 
   set(_REFLECTION grpc++_reflection)
   if(CMAKE_CROSSCOMPILING)
-    find_program(_PROTOBUF_PROTOC protoc)
+    find_program(_PROTOBUF_PROTOC protoc
+      REQUIRED)
   else()
     set(_PROTOBUF_PROTOC $<TARGET_FILE:protobuf::protoc>)
   endif()
@@ -1011,7 +1010,8 @@ if(WITH_NVMEOF_GATEWAY_MONITOR_CLIENT)
   message(STATUS "Using gRPC ${gRPC_VERSION}")
   set(_GRPC_GRPCPP gRPC::grpc++)
   if(CMAKE_CROSSCOMPILING)
-    find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+    find_program(_GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin
+      REQUIRED)
   else()
     set(_GRPC_CPP_PLUGIN_EXECUTABLE $<TARGET_FILE:gRPC::grpc_cpp_plugin>)
   endif()
@@ -1147,6 +1147,7 @@ if(WITH_RADOSGW)
     endif(WITH_SYSTEM_ARROW)
   endif(WITH_RADOSGW_SELECT_PARQUET OR WITH_RADOSGW_ARROW_FLIGHT)
 
+  add_subdirectory(crypto)
   add_subdirectory(libkmip)
   add_subdirectory(rgw)
 endif(WITH_RADOSGW)

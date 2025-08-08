@@ -533,7 +533,9 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
   if (trim) {
     interval_set<uint64_t> whole_device;
     whole_device.insert(0, b->get_size());
-    b->try_discard(whole_device, false);
+    dout(5) << __func__ << " trimming device:" << path << dendl;
+    b->try_discard(whole_device, false, true);
+    dout(5) << __func__ << " trimmed device:" << path << dendl;
   }
 
   dout(1) << __func__ << " bdev " << id << " path " << path
@@ -703,6 +705,7 @@ int BlueFS::mkfs(uuid_d osd_uuid, const bluefs_layout_t& layout)
         _get_block_device_size(BlueFS::BDEV_WAL) * 95 / 100,
         _get_block_device_size(BlueFS::BDEV_DB) * 95 / 100,
         _get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100));
+    vselector->update_from_config(cct);
   }
 
   _init_logger();
@@ -1070,6 +1073,7 @@ int BlueFS::mount()
         _get_block_device_size(BlueFS::BDEV_WAL) * 95 / 100,
         _get_block_device_size(BlueFS::BDEV_DB) * 95 / 100,
         _get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100));
+    vselector->update_from_config(cct);
   }
 
   _init_alloc();
@@ -1208,7 +1212,7 @@ int BlueFS::prepare_new_device(int id, const bluefs_layout_t& layout)
       REMOVE_WAL,
       layout);
   } else {
-    assert(false);
+    ceph_assert(false);
   }
   return 0;
 }
@@ -1411,7 +1415,7 @@ int BlueFS::_replay(bool noop, bool to_stdout)
       if (r != (int)super.block_size && cct->_conf->bluefs_replay_recovery) {
 	r += _do_replay_recovery_read(log_reader, pos, read_pos + r, super.block_size - r, &bl);
       }
-      assert(r == (int)super.block_size);
+      ceph_assert(r == (int)super.block_size);
       read_pos += r;
     }
     uint64_t more = 0;
@@ -1948,7 +1952,7 @@ int BlueFS::device_migrate_to_existing(
 
   dout(10) << __func__ << " devs_source " << devs_source
 	   << " dev_target " << dev_target << dendl;
-  assert(dev_target < (int)MAX_BDEV);
+  ceph_assert(dev_target < (int)MAX_BDEV);
 
   int flags = 0;
   flags |= devs_source.count(BDEV_DB) ?
@@ -2093,7 +2097,7 @@ int BlueFS::device_migrate_to_new(
 
   dout(10) << __func__ << " devs_source " << devs_source
 	   << " dev_target " << dev_target << dendl;
-  assert(dev_target == (int)BDEV_NEWDB || dev_target == (int)BDEV_NEWWAL);
+  ceph_assert(dev_target == (int)BDEV_NEWDB || dev_target == (int)BDEV_NEWWAL);
 
   int flags = 0;
 
@@ -4695,7 +4699,6 @@ void BlueFS::_drain_writer(FileWriter *h)
     if (bdev[i]) {
       if (h->iocv[i]) {
 	h->iocv[i]->aio_wait();
-	delete h->iocv[i];
       }
     }
   }

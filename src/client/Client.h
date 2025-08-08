@@ -1389,14 +1389,6 @@ private:
     void finish(int r) override {
       CRF->finish_io(r);
     }
-
-    // For _read_async, we may not finish in one go, so be prepared for multiple
-    // calls to complete. All the handling though is in C_Read_Finisher.
-    void complete(int r) override {
-      finish(r);
-      if (CRF->iofinished)
-        delete this;
-    }
   };
 
   class C_Read_Sync_NonBlocking : public Context {
@@ -1766,9 +1758,9 @@ private:
   void do_readahead(Fh *f, Inode *in, uint64_t off, uint64_t len);
   int64_t _write_success(Fh *fh, utime_t start, uint64_t fpos,
           int64_t offset, uint64_t size, Inode *in);
-  int64_t _write(Fh *fh, int64_t offset, uint64_t size, const char *buf,
-          const struct iovec *iov, int iovcnt, Context *onfinish = nullptr,
-          bool do_fsync = false, bool syncdataonly = false);
+  int64_t _write(Fh *fh, int64_t offset, uint64_t size, bufferlist bl,
+          Context *onfinish = nullptr, bool do_fsync = false,
+          bool syncdataonly = false);
   int64_t _preadv_pwritev_locked(Fh *fh, const struct iovec *iov,
                                  int iovcnt, int64_t offset,
                                  bool write, bool clamp_to_int,

@@ -174,7 +174,7 @@ std::string configuration::to_json_str() const {
 
 // create a random string of N characters
 template<size_t N>
-std::string unique_string() {
+std::string random_string() {
   static const std::string possible_characters{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXY"};
   static const auto max_possible_value = possible_characters.length() - 1;
   std::random_device rd;
@@ -185,28 +185,36 @@ std::string unique_string() {
   return str;
 }
 
-// create an incremental string of N characters if possible
-// fallback to a random string of N characters if not
-template<size_t N>
+// create a string that start with an incremenatl counter
+// of INC charecters and ends with a random string of RND characters
+// fallback to a random string of INC+RND characters
+template<size_t INC, size_t RND>
 std::string incremental_string(const DoutPrefixProvider *dpp, std::optional<std::string> old_name) {
-  // for the fist time we create a string of zeros
+  static const auto format = fmt::format("{{:0>{}}}{{}}", INC);
+  uint32_t counter = 0;
   if (!old_name) {
-    return std::string(N, '0');
+    const auto random_part = random_string<RND>();
+    return fmt::vformat(format, fmt::make_format_args(counter, random_part));
   }
-  const auto str_counter = old_name->substr(old_name->length() - N+1, N);
+  const auto str_counter = old_name->substr(old_name->length() - (INC+RND), INC);
   try {
-    auto counter = boost::lexical_cast<unsigned long>(str_counter);
+    counter = boost::lexical_cast<uint32_t>(str_counter);
+    // we are not concerned about overflow here, as the counter is only used to
+    // distinguish between different logging objects created in the same second
     ++counter;
-    static const auto format = fmt::format("{{:0>{}}}", N);
-    return fmt::vformat(format, fmt::make_format_args(counter));
+    const auto random_part = random_string<RND>();
+    return fmt::vformat(format, fmt::make_format_args(counter, random_part));
   } catch (const boost::bad_lexical_cast& e) {
     ldpp_dout(dpp, 5) << "WARNING: failed to convert string '" << str_counter <<
-      "' to counter. " <<e.what() << ". will create random temporary logging file name" << dendl;
-    return unique_string<N>();
+      "' to counter. " << e.what() << ". will create random temporary logging file name" << dendl;
+    return random_string<INC+RND>();
   }
 }
 
 constexpr size_t UniqueStringLength = 16;
+// we need 10 characters for the counter (uint32_t)
+constexpr size_t CounterStringLength = 10;
+constexpr size_t RandomStringLength = UniqueStringLength - CounterStringLength;
 
 ceph::coarse_real_time time_from_name(const std::string& obj_name, const DoutPrefixProvider *dpp) {
   static const auto time_format_length = std::string{"YYYY-MM-DD-hh-mm-ss"}.length();
@@ -251,7 +259,7 @@ int new_logging_object(const configuration& conf,
   std::tm t{};
   localtime_r(&tt, &t);
 
-  const auto unique = incremental_string<UniqueStringLength>(dpp, old_name);
+  const auto unique = incremental_string<CounterStringLength, RandomStringLength>(dpp, old_name);
 
   switch (conf.obj_key_format) {
     case KeyFormat::Simple:
@@ -307,7 +315,7 @@ int commit_logging_object(const configuration& conf,
   std::string target_tenant_name;
   int ret = rgw_parse_url_bucket(conf.target_bucket, tenant_name, target_tenant_name, target_bucket_name);
   if (ret < 0) {
-    ldpp_dout(dpp, 1) << "ERROR: failed to parse target bucket '" << conf.target_bucket << "' when commiting logging object, ret = "
+    ldpp_dout(dpp, 1) << "ERROR: failed to parse target bucket '" << conf.target_bucket << "' when committing logging object, ret = "
       << ret << dendl;
     return ret;
   }
@@ -316,7 +324,7 @@ int commit_logging_object(const configuration& conf,
   ret = driver->load_bucket(dpp, target_bucket_id,
                                &target_bucket, y);
   if (ret < 0) {
-    ldpp_dout(dpp, 1) << "ERROR: failed to get target logging bucket '" << target_bucket_id << "' when commiting logging object, ret = "
+    ldpp_dout(dpp, 1) << "ERROR: failed to get target logging bucket '" << target_bucket_id << "' when committing logging object, ret = "
       << ret << dendl;
     return ret;
   }
@@ -483,7 +491,7 @@ int log_record(rgw::sal::Driver* driver,
         return ret;
       }
     } else {
-      ldpp_dout(dpp, 20) << "INFO: record will be written to current logging object '" << obj_name << "'. will be comitted at: " << time_to_commit << dendl;
+      ldpp_dout(dpp, 20) << "INFO: record will be written to current logging object '" << obj_name << "'. will be committed at: " << time_to_commit << dendl;
     }
   } else if (ret == -ENOENT) {
     // try to create the temporary log object for the first time
@@ -564,11 +572,11 @@ int log_record(rgw::sal::Driver* driver,
         s->info.x_meta_map.contains("x-amz-id-2") ? s->info.x_meta_map.at("x-amz-id-2") : "-",
         aws_version,
         s->info.env->get("SSL_CIPHER", "-"),
-        auth_type,
+        dash_if_empty(auth_type),
         dash_if_empty(fqdn),
         s->info.env->get("TLS_VERSION", "-"),
         "-", // no access point ARN
-        (s->has_acl_header) ? "Yes" : "-");
+        (s->granted_by_acl) ? "Yes" : "-");
       break;
     case LoggingType::Journal:
       record = fmt::format("{} {} [{:%d/%b/%Y:%H:%M:%S %z}] {} {} {} {} {}",

@@ -60,11 +60,12 @@ of the following form:
 A larger value may increase the speed of cluster balancing / convergence
 at the potential cost of greater impact on client operations.
 
-There is a separate setting for how uniform the distribution of PGs must be for
-the module to consider the cluster adequately balanced.  At the time of writing
-(June 2025), this value defaults to ``5``, which means that if a given OSD's PG
-replicas vary by five or fewer above or below the cluster's average, it will be
-considered sufficiently balanced.
+There is a separate setting ``upmap_max_deviation`` for how uniform the
+distribution of PGs must be for the module to consider the cluster adequately
+balanced.  At the time of writing (June 2025), this value defaults to ``5``,
+which means that if a given OSD's PG replicas vary by five or fewer above or
+below the cluster's average, it will be considered sufficiently balanced.
+
 
 This value of PG replicas / shards (as distinct from logical PGs) is reported
 by the ``ceph osd df`` command under the ``PGS`` column and the variance
@@ -81,7 +82,7 @@ run a command of the following form:
 
   .. prompt:: bash $
 
-     ceph config set mgr/balancer/upmap_max_deviation   1
+     ceph config set mgr mgr/balancer/upmap_max_deviation   1
 
 This value is reasonable and safe for most clusters.  Note that this is
 an absolute integer number of PGs, not a percentage.

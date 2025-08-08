@@ -436,9 +436,13 @@ BtreeLBAManager::insert_mappings(
 	ceph_assert(p.second);
 	iter = std::move(p.first);
 	auto &leaf_node = *iter.get_leaf_node();
+	bool need_reserved_ptr =
+	  info.is_indirect_mapping() || info.is_zero_mapping();
 	leaf_node.insert_child_ptr(
 	  iter.get_leaf_pos(),
-	  info.extent,
+	  need_reserved_ptr
+	    ? get_reserved_ptr<LBALeafNode, laddr_t>()
+	    : static_cast<BaseChildNode<LBALeafNode, laddr_t>*>(info.extent),
 	  leaf_node.get_size() - 1 /*the size before the insert*/);
 	if (is_valid_child_ptr(info.extent)) {
 	  ceph_assert(info.value.pladdr.is_paddr());
@@ -778,15 +782,12 @@ BtreeLBAManager::refresh_lba_cursor(
     });
   }
 
-  auto [viewable, state] = cursor.parent->is_viewable_by_trans(c.trans);
   auto leaf = cursor.parent->cast<LBALeafNode>();
-
-  TRACET("cursor: {} viewable: {} state: {}",
-	 c.trans, cursor, viewable, state);
-
+  auto [viewable, l] = leaf->resolve_transaction(c.trans, cursor.key);
+  TRACET("cursor: {} viewable: {}", c.trans, cursor, viewable);
   if (!viewable) {
+    leaf = l;
     stats.num_refresh_unviewable_parent++;
-    leaf = leaf->find_pending_version(c.trans, cursor.get_laddr());
     cursor.parent = leaf;
   }
 
@@ -887,7 +888,7 @@ BtreeLBAManager::_decref_intermediate(
 
       if (val.refcount == 0) {
 	return btree.remove(c, iter
-	).si_then([key, val] {
+	).si_then([key, val](auto) {
 	  return ref_iertr::make_ready_future<
 	    update_mapping_ret_bare_t>(key, val);
 	});
@@ -1073,7 +1074,7 @@ BtreeLBAManager::_update_mapping(
 	  return btree.remove(
 	    c,
 	    iter
-	  ).si_then([addr, ret] {
+	  ).si_then([addr, ret](auto) {
 	    return update_mapping_ret_bare_t(addr, ret);
 	  });
 	} else {

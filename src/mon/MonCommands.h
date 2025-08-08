@@ -1246,6 +1246,10 @@ COMMAND("osd pool stretch unset "
 COMMAND("osd pool availability-status", \
         "obtain availability stats from all pools", \
         "osd", "r")
+COMMAND("osd pool clear-availability-status "
+		"name=pool,type=CephPoolname ",
+        "clear a pool's existing availability stats", 
+        "osd", "r")
 COMMAND("osd utilization",
 	"get basic pg distribution stats",
 	"osd", "r")
@@ -1520,7 +1524,15 @@ COMMAND_WITH_FLAG("dump_historic_ops",
             "show recent ops",
             "mon", "r",
             FLAG(TELL))
+COMMAND_WITH_FLAG("dump_historic_ops_by_duration",
+            "show recent ops sorted by duration",
+            "mon", "r",
+            FLAG(TELL))
 COMMAND_WITH_FLAG("dump_historic_slow_ops",
             "show recent slow ops",
+            "mon", "r",
+            FLAG(TELL))
+COMMAND_WITH_FLAG("dump_ops_in_flight",
+            "show the ops currently in flight",
             "mon", "r",
             FLAG(TELL))

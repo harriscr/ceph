@@ -1250,7 +1250,7 @@ struct LruBufferCacheShard : public BlueStore::BufferCacheShard {
   void _rm(BlueStore::Buffer *b) override {
     ceph_assert(buffer_bytes >= b->length);
     buffer_bytes -= b->length;
-    assert(*(b->cache_age_bin) >= b->length);
+    ceph_assert(*(b->cache_age_bin) >= b->length);
     *(b->cache_age_bin) -= b->length;
     auto q = lru.iterator_to(*b);
     lru.erase(q);
@@ -1263,7 +1263,7 @@ struct LruBufferCacheShard : public BlueStore::BufferCacheShard {
   void _adjust_size(BlueStore::Buffer *b, int64_t delta) override {
     ceph_assert((int64_t)buffer_bytes + delta >= 0);
     buffer_bytes += delta;
-    assert(*(b->cache_age_bin) + delta >= 0);
+    ceph_assert(*(b->cache_age_bin) + delta >= 0);
     *(b->cache_age_bin) += delta;
   }
   void _touch(BlueStore::Buffer *b) override {
@@ -1289,7 +1289,7 @@ struct LruBufferCacheShard : public BlueStore::BufferCacheShard {
       BlueStore::Buffer *b = &*i;
       ceph_assert(b->is_clean());
       dout(20) << __func__ << " rm " << *b << dendl;
-      assert(*(b->cache_age_bin) >= b->length);
+      ceph_assert(*(b->cache_age_bin) >= b->length);
       *(b->cache_age_bin) -= b->length;
       b->space->_rm_buffer(this, b);
     }
@@ -1424,7 +1424,7 @@ public:
       buffer_bytes -= b->length;
       ceph_assert(list_bytes[b->cache_private] >= b->length);
       list_bytes[b->cache_private] -= b->length;
-      assert(*(b->cache_age_bin) >= b->length);
+      ceph_assert(*(b->cache_age_bin) >= b->length);
       *(b->cache_age_bin) -= b->length;
     }
     switch (b->cache_private) {
@@ -1481,7 +1481,7 @@ public:
       buffer_bytes += delta;
       ceph_assert((int64_t)list_bytes[b->cache_private] + delta >= 0);
       list_bytes[b->cache_private] += delta;
-      assert(*(b->cache_age_bin) + delta >= 0);
+      ceph_assert(*(b->cache_age_bin) + delta >= 0);
       *(b->cache_age_bin) += delta;
     }
   }
@@ -1551,7 +1551,7 @@ public:
         buffer_bytes -= b->length;
         ceph_assert(list_bytes[BUFFER_WARM_IN] >= b->length);
         list_bytes[BUFFER_WARM_IN] -= b->length;
-        assert(*(b->cache_age_bin) >= b->length);
+        ceph_assert(*(b->cache_age_bin) >= b->length);
         *(b->cache_age_bin) -= b->length;
 	to_evict_bytes -= b->length;
         evicted += b->length;
@@ -2939,7 +2939,6 @@ void BlueStore::Blob::maybe_prune_tail() {
   }
 }
 
-#ifndef CACHE_BLOB_BL
 void BlueStore::Blob::decode(
   bufferptr::const_iterator& p,
   uint64_t struct_v,
@@ -2969,7 +2968,6 @@ void BlueStore::Blob::decode(
     }
   }
 }
-#endif
 
 // Extent
 
@@ -5765,7 +5763,9 @@ std::vector<std::string> BlueStore::get_tracked_keys() const noexcept
     "bluestore_warn_on_no_per_pg_omap"s,
     "bluestore_max_defer_interval"s,
     "bluestore_onode_segment_size"s,
-    "bluestore_allocator_lookup_policy"s
+    "bluestore_allocator_lookup_policy"s,
+    "bluestore_volume_selection_reserved_factor"s,
+    "bluestore_volume_selection_reserved"s
   };
 }
 
@@ -5839,6 +5839,11 @@ void BlueStore::handle_conf_change(const ConfigProxy& conf,
   }
   if (changed.count("bluestore_allocator_lookup_policy")) {
     _update_allocator_lookup_policy();
+  }
+  if (changed.count("bluestore_volume_selection_reserved_factor") ||
+    changed.count("bluestore_volume_selection_reserved")) {
+    if (bluefs)
+      bluefs->update_volume_selector_from_config();
   }
 }
 
@@ -7072,10 +7077,13 @@ int BlueStore::_open_bdev(bool create)
   if (r < 0)
     goto fail;
 
-  if (create && cct->_conf->bdev_enable_discard) {
+  if (create &&
+      cct->_conf.get_val<bool>("bluestore_discard_on_mkfs")) {
     interval_set<uint64_t> whole_device;
+    dout(5) << __func__ << " trimming device:" << p << dendl;
     whole_device.insert(0, bdev->get_size());
-    bdev->try_discard(whole_device, false);
+    bdev->try_discard(whole_device, false, true);
+    dout(5) << __func__ << " trimmed device:" << p << dendl;
   }
 
   if (bdev->supported_bdev_label()) {
@@ -7561,10 +7569,10 @@ int BlueStore::_minimal_open_bluefs(bool create)
   struct stat st;
 
   bfn = path + "/block.db";
+  bool trim_db_wal =
+    create && cct->_conf.get_val<bool>("bluestore_discard_on_mkfs");
   if (::stat(bfn.c_str(), &st) == 0) {
-    r = bluefs->add_block_device(
-      BlueFS::BDEV_DB, bfn,
-      create && cct->_conf->bdev_enable_discard);
+    r = bluefs->add_block_device(BlueFS::BDEV_DB, bfn, trim_db_wal);
     if (r < 0) {
       derr << __func__ << " add block device(" << bfn << ") returned: "
             << cpp_strerror(r) << dendl;
@@ -7609,8 +7617,7 @@ int BlueStore::_minimal_open_bluefs(bool create)
 
   bfn = path + "/block.wal";
   if (::stat(bfn.c_str(), &st) == 0) {
-    r = bluefs->add_block_device(BlueFS::BDEV_WAL, bfn,
-				 create && cct->_conf->bdev_enable_discard);
+    r = bluefs->add_block_device(BlueFS::BDEV_WAL, bfn, trim_db_wal);
     if (r < 0) {
       derr << __func__ << " add block device(" << bfn << ") returned: "
 	    << cpp_strerror(r) << dendl;
@@ -7684,20 +7691,16 @@ int BlueStore::_open_bluefs(bool create, bool read_only)
         bluefs->get_block_device_size(BlueFS::BDEV_DB) * 95 / 100,
         bluefs->get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100);
     } else {
-      double reserved_factor = cct->_conf->bluestore_volume_selection_reserved_factor;
-      vselector =
-        new RocksDBBlueFSVolumeSelector(
-          bluefs->get_block_device_size(BlueFS::BDEV_WAL) * 95 / 100,
-          bluefs->get_block_device_size(BlueFS::BDEV_DB) * 95 / 100,
-          bluefs->get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100,
-	  rocks_opts.write_buffer_size * rocks_opts.max_write_buffer_number,
-          rocks_opts.max_bytes_for_level_base,
-          rocks_opts.max_bytes_for_level_multiplier,
-          reserved_factor,
-          cct->_conf->bluestore_volume_selection_reserved,
-          cct->_conf->bluestore_volume_selection_policy.find("use_some_extra")
-             == 0);
+      vselector = new RocksDBBlueFSVolumeSelector(
+	bluefs->get_block_device_size(BlueFS::BDEV_WAL) * 95 / 100,
+	bluefs->get_block_device_size(BlueFS::BDEV_DB) * 95 / 100,
+	bluefs->get_block_device_size(BlueFS::BDEV_SLOW) * 95 / 100,
+	rocks_opts.write_buffer_size * rocks_opts.max_write_buffer_number,
+	rocks_opts.max_bytes_for_level_base,
+	rocks_opts.max_bytes_for_level_multiplier,
+	cct->_conf->bluestore_volume_selection_policy.find("use_some_extra") == 0);
     }    
+    vselector->update_from_config(cct);
   }
   if (create) {
     bluefs->mkfs(fsid, bluefs_layout);
@@ -18039,6 +18042,8 @@ int BlueStore::_remove(TransContext *txc,
   return r;
 }
 
+
+
 int BlueStore::_setattr(TransContext *txc,
 			CollectionRef& c,
 			OnodeRef& o,
@@ -18049,18 +18054,17 @@ int BlueStore::_setattr(TransContext *txc,
 	   << " " << name << " (" << val.length() << " bytes)"
 	   << dendl;
   int r = 0;
-  if (!val.length()) {
-    auto& b = o->onode.attrs[name.c_str()] = bufferptr("", 0);
-    b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
-  } else if (!val.is_contiguous()) {
-    val.rebuild();
-    auto& b = o->onode.attrs[name.c_str()] = val.front();
-    b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
-  } else if (val.front().is_partial()) {
-    val.rebuild();
-    auto& b = o->onode.attrs[name.c_str()] = val.front();
-    b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
+  auto& b = o->onode.attrs[name.c_str()];
+  if (val.length() == 0) {
+    b = bufferptr("", 0);
+  } else {
+    if (!val.is_contiguous() || val.front().is_partial()) {
+      val.rebuild();
+    }
+    b = val.front();
   }
+  b.reassign_to_mempool(mempool::mempool_bluestore_cache_meta);
+
   txc->write_onode(o);
   dout(10) << __func__ << " " << c->cid << " " << o->oid
 	   << " " << name << " (" << val.length() << " bytes)"
@@ -19763,9 +19767,7 @@ void RocksDBBlueFSVolumeSelector::dump(ostream& sout) {
 
 BlueFSVolumeSelector* RocksDBBlueFSVolumeSelector::clone_empty() const {
   RocksDBBlueFSVolumeSelector* ns =
-    new RocksDBBlueFSVolumeSelector(0, 0, 0,
-				    0, 0, 0,
-				    0, 0, false);
+    new RocksDBBlueFSVolumeSelector(0, 0, 0, 0, 0, 0, false);
   return ns;
 }
 

@@ -366,6 +366,9 @@
 /* Backend POSIX for Rados Gateway */
 #cmakedefine WITH_RADOSGW_POSIX
 
+/* Backend RADOS for Rados Gateway */
+#cmakedefine WITH_RADOSGW_RADOS
+
 /* Defined if std::map::merge() is supported */
 #cmakedefine HAVE_STDLIB_MAP_SPLICING
 
@@ -374,9 +377,6 @@
 
 /* Defined if UADK compress/decompress is supported */
 #cmakedefine HAVE_UADK
-
-/* Define if seastar is available. */
-#cmakedefine HAVE_SEASTAR
 
 /* Define if unit tests are built. */
 #cmakedefine UNIT_TESTS_BUILT

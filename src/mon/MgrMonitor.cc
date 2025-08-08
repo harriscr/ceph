@@ -725,7 +725,7 @@ void MgrMonitor::on_active()
     return;
   }
   mon.clog->debug() << "mgrmap e" << map.epoch << ": " << map;
-  assert(HAVE_FEATURE(mon.get_quorum_con_features(), SERVER_NAUTILUS));
+  ceph_assert(HAVE_FEATURE(mon.get_quorum_con_features(), SERVER_NAUTILUS));
   if (pending_map.always_on_modules == always_on_modules()) {
     return;
   }
@@ -1368,7 +1368,7 @@ bool MgrMonitor::prepare_command(MonOpRequestRef op)
     }
 
     if (pending_map.force_disabled_modules.contains(mod)) {
-      ss << "Module \"" << mod << "\"is already disabled";
+      ss << "Module \"" << mod << "\" is already disabled";
       r = 0;
       goto out;
     }

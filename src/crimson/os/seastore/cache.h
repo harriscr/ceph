@@ -19,6 +19,7 @@
 #include "crimson/os/seastore/segment_manager.h"
 #include "crimson/os/seastore/transaction.h"
 #include "crimson/os/seastore/linked_tree_node.h"
+#include "crimson/os/seastore/extent_pinboard.h"
 
 namespace crimson::os::seastore::backref {
 class BtreeBackrefManager;
@@ -222,10 +223,11 @@ public:
       ceph_assert(ret->get_type() == type);
 
       if (ret->is_stable()) {
-        if (ret->has_delta()) {
+        if (ret->is_stable_dirty()) {
           ++access_stats.trans_dirty;
           ++stats.access.trans_dirty;
         } else {
+          assert(ret->is_stable_clean());
           ++access_stats.trans_lru;
           ++stats.access.trans_lru;
         }
@@ -249,7 +251,7 @@ public:
       return ret->wait_io().then([ret] {
         return get_extent_if_cached_iertr::make_ready_future<CachedExtentRef>(ret);
       });
-    }
+    } // result == Transaction::get_extent_ret::ABSENT
 
     assert(paddr.is_absolute());
     // get_extent_ret::ABSENT from transaction
@@ -278,16 +280,17 @@ public:
 
     ceph_assert(ret->get_type() == type);
 
-    if (ret->has_delta()) {
+    if (ret->is_stable_dirty()) {
       ++access_stats.cache_dirty;
       ++stats.access.cache_dirty;
     } else {
+      assert(ret->is_stable_clean());
       ++access_stats.cache_lru;
       ++stats.access.cache_lru;
     }
 
     t.add_to_read_set(ret);
-    touch_extent(*ret, &t_src, t.get_cache_hint());
+    touch_extent_fully(*ret, &t_src, t.get_cache_hint());
     if (!ret->is_fully_loaded()) {
       SUBDEBUGT(seastore_cache,
         "{} {}~0x{:x} is present without fully loaded in cache -- {}",
@@ -336,7 +339,7 @@ public:
     if (result == Transaction::get_extent_ret::RETIRED) {
       SUBERRORT(seastore_cache, "{} {}~0x{:x} is retired on t -- {}",
                 t, T::TYPE, offset, length, *ret);
-      ceph_abort("impossible");
+      ceph_abort_msg("impossible");
     } else if (result == Transaction::get_extent_ret::PRESENT) {
       assert(ret->get_length() == length);
       if (ret->is_fully_loaded()) {
@@ -357,7 +360,7 @@ public:
                 t, T::TYPE, offset, length);
       auto f = [&t, this, t_src](CachedExtent &ext) {
         t.add_to_read_set(CachedExtentRef(&ext));
-        touch_extent(ext, &t_src, t.get_cache_hint());
+        touch_extent_fully(ext, &t_src, t.get_cache_hint());
       };
       return trans_intr::make_interruptible(
         do_get_caching_extent<T>(
@@ -394,8 +397,8 @@ public:
     SUBTRACET(seastore_cache, "{} {}~0x{:x} is absent on t, query cache ...",
 	      t, T::TYPE, offset, length);
     const auto t_src = t.get_src();
-    auto f = [&t, this, t_src](CachedExtent &ext) {
-      // FIXME: assert(ext.is_stable_clean());
+    auto f = [&t, this, partial_off, partial_len, t_src](CachedExtent &ext) {
+      // XXX: is_stable_dirty() may not be linked in lba tree
       assert(ext.is_stable());
       assert(T::TYPE == ext.get_type());
       cache_access_stats_t& access_stats = get_by_ext(
@@ -405,7 +408,9 @@ public:
       ++stats.access.load_absent;
 
       t.add_to_read_set(CachedExtentRef(&ext));
-      touch_extent(ext, &t_src, t.get_cache_hint());
+      touch_extent_by_range(
+	ext, &t_src, t.get_cache_hint(),
+	partial_off, partial_len);
     };
     return trans_intr::make_interruptible(
       do_get_caching_extent<T>(
@@ -462,6 +467,74 @@ public:
     return view->is_data_stable();
   }
 
+  get_extent_iertr::future<> maybe_wait_accessible(
+    Transaction &t,
+    CachedExtent &extent) final {
+    // as of now, only lba tree nodes can go in here,
+    // so it must be fully loaded.
+    assert(extent.is_valid());
+    assert(extent.is_fully_loaded());
+    const auto t_src = t.get_src();
+    auto ext_type = extent.get_type();
+    assert(!is_retired_placeholder_type(ext_type));
+    cache_access_stats_t& access_stats = get_by_ext(
+      get_by_src(stats.access_by_src_ext, t_src),
+      ext_type);
+    if (extent.is_stable()) {
+      // stable from trans-view
+      bool needs_touch = false, needs_step_2 = false;
+      assert(!extent.is_pending_in_trans(t.get_trans_id()));
+      auto ret = t.maybe_add_to_read_set(&extent);
+      if (ret.added) {
+	if (extent.is_stable_dirty()) {
+	  ++access_stats.cache_dirty;
+	  ++stats.access.cache_dirty;
+	} else {
+	  ++access_stats.cache_lru;
+	  ++stats.access.cache_lru;
+	}
+	if (ret.is_paddr_known) {
+	  touch_extent_fully(extent, &t_src, t.get_cache_hint());
+	} else {
+	  needs_touch = true;
+	}
+      } else {
+	// already exists
+	if (extent.is_stable_dirty()) {
+	  ++access_stats.trans_dirty;
+	  ++stats.access.trans_dirty;
+	} else {
+	  ++access_stats.trans_lru;
+	  ++stats.access.trans_lru;
+	}
+      }
+      // step 2 maybe reordered after wait_io(),
+      // always try step 2 if paddr unknown
+      needs_step_2 = !ret.is_paddr_known;
+
+      auto target_extent = CachedExtentRef(&extent);
+      return trans_intr::make_interruptible(
+	extent.wait_io()
+      ).then_interruptible([target_extent, needs_touch,
+			    needs_step_2, &t, this, t_src] {
+	if (needs_step_2) {
+	  t.maybe_add_to_read_set_step_2(target_extent.get());
+	}
+	if (needs_touch) {
+	  touch_extent_fully(*target_extent, &t_src, t.get_cache_hint());
+	}
+	return get_extent_iertr::now();
+      });
+    } else {
+      assert(extent.is_mutable());
+      assert(!extent.is_pending_io());
+      assert(extent.is_pending_in_trans(t.get_trans_id()));
+      ++access_stats.trans_pending;
+      ++stats.access.trans_pending;
+      return get_extent_iertr::now();
+    }
+  }
+
   get_extent_iertr::future<CachedExtentRef>
   get_extent_viewable_by_trans(
     Transaction &t,
@@ -487,9 +560,9 @@ public:
     if (extent->is_stable()) {
       p_extent = extent->get_transactional_view(t);
       if (p_extent != extent.get()) {
-        assert(!extent->is_stable_writting());
+        assert(!extent->is_pending_io());
         assert(p_extent->is_pending_in_trans(t.get_trans_id()));
-        assert(!p_extent->is_stable_writting());
+        assert(!p_extent->is_pending_io());
         ++access_stats.trans_pending;
         ++stats.access.trans_pending;
         if (p_extent->is_mutable()) {
@@ -505,24 +578,26 @@ public:
         assert(!p_extent->is_pending_in_trans(t.get_trans_id()));
         auto ret = t.maybe_add_to_read_set(p_extent);
         if (ret.added) {
-          if (p_extent->has_delta()) {
+          if (p_extent->is_stable_dirty()) {
             ++access_stats.cache_dirty;
             ++stats.access.cache_dirty;
           } else {
+            assert(p_extent->is_stable_clean());
             ++access_stats.cache_lru;
             ++stats.access.cache_lru;
           }
           if (ret.is_paddr_known) {
-            touch_extent(*p_extent, &t_src, t.get_cache_hint());
+            touch_extent_fully(*p_extent, &t_src, t.get_cache_hint());
           } else {
             needs_touch = true;
           }
         } else {
           // already exists
-          if (p_extent->has_delta()) {
+          if (p_extent->is_stable_dirty()) {
             ++access_stats.trans_dirty;
             ++stats.access.trans_dirty;
           } else {
+            assert(p_extent->is_stable_clean());
             ++access_stats.trans_lru;
             ++stats.access.trans_lru;
           }
@@ -532,7 +607,7 @@ public:
         needs_step_2 = !ret.is_paddr_known;
       }
     } else {
-      assert(!extent->is_stable_writting());
+      assert(!extent->is_pending_io());
       assert(extent->is_pending_in_trans(t.get_trans_id()));
       ++access_stats.trans_pending;
       ++stats.access.trans_pending;
@@ -553,14 +628,16 @@ public:
     assert(is_logical_type(p_extent->get_type()) ||
            p_extent->is_fully_loaded());
 
+    auto target_extent = CachedExtentRef(p_extent);
     return trans_intr::make_interruptible(
       p_extent->wait_io()
-    ).then_interruptible([p_extent, needs_touch, needs_step_2, &t, this, &t_src] {
+    ).then_interruptible([target_extent, needs_touch, needs_step_2, &t, this, t_src] {
+      auto p_extent = target_extent.get();
       if (needs_step_2) {
 	t.maybe_add_to_read_set_step_2(p_extent);
       }
       if (needs_touch) {
-	touch_extent(*p_extent, &t_src, t.get_cache_hint());
+	touch_extent_fully(*p_extent, &t_src, t.get_cache_hint());
       }
       return get_extent_iertr::make_ready_future<CachedExtentRef>(
         CachedExtentRef(p_extent));
@@ -843,7 +920,7 @@ private:
     if (status == Transaction::get_extent_ret::RETIRED) {
       SUBERRORT(seastore_cache, "{} {}~0x{:x} {} is retired on t -- {}",
                 t, type, offset, length, laddr, *ret);
-      ceph_abort("impossible");
+      ceph_abort_msg("impossible");
     } else if (status == Transaction::get_extent_ret::PRESENT) {
       assert(ret->get_length() == length);
       if (ret->is_fully_loaded()) {
@@ -864,7 +941,7 @@ private:
                 t, type, offset, length, laddr);
       auto f = [&t, this, t_src](CachedExtent &ext) {
 	t.add_to_read_set(CachedExtentRef(&ext));
-	touch_extent(ext, &t_src, t.get_cache_hint());
+	touch_extent_fully(ext, &t_src, t.get_cache_hint());
       };
       return trans_intr::make_interruptible(
 	do_get_caching_extent_by_type(
@@ -897,7 +974,7 @@ private:
 	      t, type, offset, length, laddr);
     const auto t_src = t.get_src();
     auto f = [&t, this, t_src](CachedExtent &ext) {
-      // FIXME: assert(ext.is_stable_clean());
+      // XXX: is_stable_dirty() may not be linked in lba tree
       assert(ext.is_stable());
       cache_access_stats_t& access_stats = get_by_ext(
         get_by_src(stats.access_by_src_ext, t_src),
@@ -906,7 +983,7 @@ private:
       ++stats.access.load_absent;
 
       t.add_to_read_set(CachedExtentRef(&ext));
-      touch_extent(ext, &t_src, t.get_cache_hint());
+      touch_extent_fully(ext, &t_src, t.get_cache_hint());
     };
     return trans_intr::make_interruptible(
       do_get_caching_extent_by_type(
@@ -1044,6 +1121,9 @@ public:
       std::rethrow_exception(crimson::ct_error::enospc::exception_ptr());
     }
     auto ret = CachedExtent::make_cached_extent_ref<T>(std::move(result->bp));
+    assert(is_rewrite_generation(
+      result->gen,
+      epm.dynamic_max_rewrite_generation));
     ret->init(CachedExtent::extent_state_t::INITIAL_WRITE_PENDING,
               result->paddr,
               hint,
@@ -1089,6 +1169,9 @@ public:
     std::vector<TCachedExtentRef<T>> extents;
     for (auto &result : results) {
       auto ret = CachedExtent::make_cached_extent_ref<T>(std::move(result.bp));
+      assert(is_rewrite_generation(
+	result.gen,
+	epm.dynamic_max_rewrite_generation));
       ret->init(CachedExtent::extent_state_t::INITIAL_WRITE_PENDING,
                 result.paddr,
                 hint,
@@ -1295,7 +1378,7 @@ public:
 
     // journal replay should has been finished at this point,
     // Cache::root should have been inserted to the dirty list
-    assert(root->has_delta());
+    assert(root->is_stable_dirty());
     std::vector<CachedExtentRef> _dirty;
     for (auto &e : extents_index) {
       _dirty.push_back(CachedExtentRef(&e));
@@ -1499,18 +1582,31 @@ public:
   }
 
 private:
-  /// Update lru for access to ref
-  void touch_extent(
+  void touch_extent_fully(
       CachedExtent &ext,
       const Transaction::src_t* p_src,
       cache_hint_t hint)
+  {
+    touch_extent_by_range(ext, p_src, hint, 0, ext.get_length());
+  }
+
+  /// Update extent pinboard for access to ref
+  ///
+  /// The extent must be touched before read_extent(), otherwise it is
+  /// incorrect to detect sequential read using load_start and load_length.
+  void touch_extent_by_range(
+      CachedExtent &ext,
+      const Transaction::src_t* p_src,
+      cache_hint_t hint,
+      extent_len_t load_start,
+      extent_len_t load_length)
   {
     assert(ext.get_paddr().is_absolute());
     if (hint == CACHE_HINT_NOCACHE && is_logical_type(ext.get_type())) {
       return;
     }
     if (ext.is_stable_clean() && !ext.is_placeholder()) {
-      lru.move_to_top(ext, p_src);
+      pinboard->move_to_top(ext, p_src, load_start, load_length);
     }
   }
 
@@ -1567,156 +1663,7 @@ private:
   friend class crimson::os::seastore::backref::BtreeBackrefManager;
   friend class crimson::os::seastore::BackrefManager;
 
-  /**
-   * lru
-   *
-   * holds references to recently used extents
-   */
-  class LRU {
-    // max size (bytes)
-    const size_t capacity = 0;
-
-    // current size (bytes)
-    size_t current_size = 0;
-
-    counter_by_extent_t<cache_size_stats_t> sizes_by_ext;
-    cache_io_stats_t overall_io;
-    counter_by_src_t<counter_by_extent_t<cache_io_stats_t> >
-      trans_io_by_src_ext;
-
-    mutable cache_io_stats_t last_overall_io;
-    mutable cache_io_stats_t last_trans_io;
-    mutable counter_by_src_t<counter_by_extent_t<cache_io_stats_t> >
-      last_trans_io_by_src_ext;
-
-    CachedExtent::primary_ref_list lru;
-
-    void do_remove_from_lru(
-        CachedExtent &extent,
-        const Transaction::src_t* p_src) {
-      assert(extent.is_stable_clean() && !extent.is_placeholder());
-      assert(extent.primary_ref_list_hook.is_linked());
-      assert(lru.size() > 0);
-      auto extent_loaded_length = extent.get_loaded_length();
-      assert(current_size >= extent_loaded_length);
-
-      lru.erase(lru.s_iterator_to(extent));
-      current_size -= extent_loaded_length;
-      get_by_ext(sizes_by_ext, extent.get_type()).account_out(extent_loaded_length);
-      overall_io.out_sizes.account_in(extent_loaded_length);
-      if (p_src) {
-        get_by_ext(
-          get_by_src(trans_io_by_src_ext, *p_src),
-          extent.get_type()
-        ).out_sizes.account_in(extent_loaded_length);
-      }
-      intrusive_ptr_release(&extent);
-    }
-
-    void trim_to_capacity(
-        const Transaction::src_t* p_src) {
-      while (current_size > capacity) {
-        do_remove_from_lru(lru.front(), p_src);
-      }
-    }
-
-  public:
-    LRU(size_t capacity) : capacity(capacity) {}
-
-    size_t get_capacity_bytes() const {
-      return capacity;
-    }
-
-    size_t get_current_size_bytes() const {
-      return current_size;
-    }
-
-    size_t get_current_num_extents() const {
-      return lru.size();
-    }
-
-    void get_stats(
-        cache_stats_t &stats,
-        bool report_detail,
-        double seconds) const;
-
-    void remove_from_lru(CachedExtent &extent) {
-      assert(extent.is_stable_clean() && !extent.is_placeholder());
-
-      if (extent.primary_ref_list_hook.is_linked()) {
-        do_remove_from_lru(extent, nullptr);
-      }
-    }
-
-    void move_to_top(
-        CachedExtent &extent,
-        const Transaction::src_t* p_src) {
-      assert(extent.is_stable_clean() && !extent.is_placeholder());
-
-      auto extent_loaded_length = extent.get_loaded_length();
-      if (extent.primary_ref_list_hook.is_linked()) {
-        // present, move to top (back)
-        assert(lru.size() > 0);
-        assert(current_size >= extent_loaded_length);
-        lru.erase(lru.s_iterator_to(extent));
-        lru.push_back(extent);
-      } else {
-        // absent, add to top (back)
-        if (extent_loaded_length > 0) {
-          current_size += extent_loaded_length;
-          overall_io.in_sizes.account_in(extent_loaded_length);
-          if (p_src) {
-            get_by_ext(
-              get_by_src(trans_io_by_src_ext, *p_src),
-              extent.get_type()
-            ).in_sizes.account_in(extent_loaded_length);
-          }
-        } // else: the extent isn't loaded upon touch_extent()/on_cache(),
-          //       account the io later in increase_cached_size() upon read_extent()
-	get_by_ext(sizes_by_ext, extent.get_type()).account_in(extent_loaded_length);
-        intrusive_ptr_add_ref(&extent);
-        lru.push_back(extent);
-
-        trim_to_capacity(p_src);
-      }
-    }
-
-    void increase_cached_size(
-      CachedExtent &extent,
-      extent_len_t increased_length,
-      const Transaction::src_t* p_src) {
-      assert(extent.is_data_stable());
-
-      if (extent.primary_ref_list_hook.is_linked()) {
-        assert(extent.is_stable_clean() && !extent.is_placeholder());
-        // present, increase size
-        assert(lru.size() > 0);
-        current_size += increased_length;
-        get_by_ext(sizes_by_ext, extent.get_type()).account_parital_in(increased_length);
-        overall_io.in_sizes.account_in(increased_length);
-        if (p_src) {
-          get_by_ext(
-            get_by_src(trans_io_by_src_ext, *p_src),
-            extent.get_type()
-          ).in_sizes.account_in(increased_length);
-        }
-
-        trim_to_capacity(nullptr);
-      }
-    }
-
-    void clear() {
-      LOG_PREFIX(Cache::LRU::clear);
-      for (auto iter = lru.begin(); iter != lru.end();) {
-	SUBDEBUG(seastore_cache, "clearing {}", *iter);
-	do_remove_from_lru(*(iter++), nullptr);
-      }
-    }
-
-    ~LRU() {
-      clear();
-    }
-  } lru;
+  ExtentPinboardRef pinboard;
 
   struct query_counters_t {
     uint64_t access = 0;
@@ -1941,12 +1888,12 @@ private:
     assert(is_aligned(offset, get_block_size()));
     assert(is_aligned(length, get_block_size()));
     assert(extent->get_paddr().is_absolute());
-    extent->set_io_wait();
+    extent->set_io_wait(extent->state);
     auto old_length = extent->get_loaded_length();
     load_ranges_t to_read = extent->load_ranges(offset, length);
     auto new_length = extent->get_loaded_length();
     assert(new_length > old_length);
-    lru.increase_cached_size(*extent, new_length - old_length, p_src);
+    pinboard->increase_cached_size(*extent, new_length - old_length, p_src);
     return seastar::do_with(to_read.ranges, [extent, this, FNAME](auto &read_ranges) {
       return ExtentPlacementManager::read_ertr::parallel_for_each(
           read_ranges, [extent, this, FNAME](auto &read_range) {

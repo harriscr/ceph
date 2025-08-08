@@ -9,11 +9,9 @@ except ImportError:
 import logging
 
 import orchestrator  # noqa
-from mgr_module import ServiceInfoT
 from mgr_util import build_url
 from typing import Dict, List, TYPE_CHECKING, cast, Collection, Callable, NamedTuple, Optional, IO
 from cephadm.services.nfs import NFSService
-from cephadm.services.smb import SMBService
 from cephadm.services.monitoring import AlertmanagerService, NodeExporterService, PrometheusService
 import secrets
 from mgr_util import verify_tls_files
@@ -22,6 +20,9 @@ import tempfile
 from cephadm.services.ingress import IngressSpec
 from cephadm.services.cephadmservice import CephExporterService
 from cephadm.services.nvmeof import NvmeofService
+from cephadm.services.service_registry import service_registry
+
+from ceph.deployment.service_spec import SMBSpec
 
 if TYPE_CHECKING:
     from cephadm.module import CephadmOrchestrator
@@ -37,6 +38,7 @@ def cherrypy_filter(record: logging.LogRecord) -> bool:
 
 logging.getLogger('cherrypy.error').addFilter(cherrypy_filter)
 cherrypy.log.access_log.propagate = False
+logger = logging.getLogger(__name__)
 
 
 class Route(NamedTuple):
@@ -181,17 +183,16 @@ class Root(Server):
             return []
 
     def prometheus_sd_config(self) -> List[Dict[str, Collection[str]]]:
-        """Return <http_sd_config> compatible prometheus config for prometheus service."""
-        servers = self.mgr.list_servers()
+        """Return <http_sd_config> compatible prometheus config for prometheus service.
+        Targets should be a length one list containing only the active mgr
+        """
         targets = []
-        for server in servers:
-            hostname = server.get('hostname', '')
-            for service in cast(List[ServiceInfoT], server.get('services', [])):
-                if service['type'] != 'mgr' or service['id'] != self.mgr.get_mgr_id():
-                    continue
-                port = self.mgr.get_module_option_ex(
-                    'prometheus', 'server_port', PrometheusService.DEFAULT_MGR_PROMETHEUS_PORT)
-                targets.append(f'{hostname}:{port}')
+        mgr_daemons = self.mgr.cache.get_daemons_by_service('mgr')
+        host = service_registry.get_service('mgr').get_active_daemon(mgr_daemons).hostname or ''
+        fqdn = self.mgr.get_fqdn(host)
+        port = self.mgr.get_module_option_ex(
+            'prometheus', 'server_port', PrometheusService.DEFAULT_MGR_PROMETHEUS_PORT)
+        targets.append(f'{fqdn}:{port}')
         return [{"targets": targets, "labels": {}}]
 
     def alertmgr_sd_config(self) -> List[Dict[str, Collection[str]]]:
@@ -263,8 +264,10 @@ class Root(Server):
         srv_entries = []
         for dd in self.mgr.cache.get_daemons_by_type('nfs'):
             assert dd.hostname is not None
-            addr = dd.ip if dd.ip else self.mgr.inventory.get_addr(dd.hostname)
-            port = NFSService.DEFAULT_EXPORTER_PORT
+            nfs = cast(NFSService, service_registry.get_service('nfs'))
+            monitoring_ip, monitoring_port = nfs.get_monitoring_details(dd.service_name(), dd.hostname)
+            addr = monitoring_ip or dd.ip or self.mgr.inventory.get_addr(dd.hostname)
+            port = monitoring_port or NFSService.DEFAULT_EXPORTER_PORT
             srv_entries.append({
                 'targets': [build_url(host=addr, port=port).lstrip('/')],
                 'labels': {'instance': dd.hostname}
@@ -276,8 +279,14 @@ class Root(Server):
         srv_entries = []
         for dd in self.mgr.cache.get_daemons_by_type('smb'):
             assert dd.hostname is not None
+            try:
+                spec = cast(SMBSpec, self.mgr.spec_store[dd.service_name()].spec)
+            except KeyError:
+                logger.warning("no spec found for %s", dd.service_name())
+                continue
+            # TODO: needs updating once ip control/colocation is present
             addr = dd.ip if dd.ip else self.mgr.inventory.get_addr(dd.hostname)
-            port = SMBService.DEFAULT_EXPORTER_PORT
+            port = spec.metrics_exporter_port()
             srv_entries.append({
                 'targets': [build_url(host=addr, port=port).lstrip('/')],
                 'labels': {'instance': dd.hostname}

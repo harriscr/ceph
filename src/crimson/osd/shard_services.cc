@@ -55,6 +55,8 @@ PerShardState::PerShardState(
 
 seastar::future<> PerShardState::dump_ops_in_flight(Formatter *f) const
 {
+  LOG_PREFIX(PerShardState::dump_ops_in_flight);
+  DEBUG("");
   registry.for_each_op([f](const auto &op) {
     op.dump(f);
   });
@@ -547,7 +549,7 @@ void OSDSingletonState::trim_maps(ceph::os::Transaction& t,
     DEBUG("removing old osdmap epoch {}", superblock.get_oldest_map());
     meta_coll->remove_map(t, superblock.get_oldest_map());
     meta_coll->remove_inc_map(t, superblock.get_oldest_map());
-    superblock.maps.erase(superblock.get_oldest_map());
+    superblock.erase_oldest_maps();
   }
 
   // we should not trim past osdmaps.cached_key_lower_bound()
@@ -770,7 +772,7 @@ seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid)
     });
   }).handle_exception([FNAME, pgid](auto ep) {
     INFO("pg {} saw exception on load {}", pgid, ep);
-    ceph_abort("Could not load pg" == 0);
+    ceph_abort_msg("Could not load pg");
     return seastar::make_exception_future<Ref<PG>>(ep);
   });
 }

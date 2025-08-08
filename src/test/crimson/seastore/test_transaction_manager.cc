@@ -179,6 +179,34 @@ struct transaction_manager_test_t :
 	  return *this;
 	}
 
+        bool to_left() {
+          assert(is_end() || is_valid());
+          do {
+            if (biter == parent.extents.begin()
+                && oiter == parent.delta.begin()) {
+              return false;
+            } else if (biter == parent.extents.begin()) {
+              --oiter;
+            } else if (oiter == parent.delta.begin()) {
+              --biter;
+            } else {
+              auto l_biter = biter;
+              auto l_oiter = oiter;
+              --l_biter;
+              --l_oiter;
+              auto l_bkey = l_biter->first;
+              auto l_okey = l_oiter->first;
+              if (l_bkey > l_okey) {
+                biter = l_biter;
+              } else { // l_bkey <= l_okey
+                oiter = l_oiter;
+              }
+            }
+          } while (!is_valid());
+          cur = get_pair();
+          return true;
+        }
+
 	bool operator==(const iterator &o) const {
 	  return o.biter == biter && o.oiter == oiter;
 	}
@@ -187,10 +215,12 @@ struct transaction_manager_test_t :
 	}
 
 	auto operator*() {
+	  assert(is_valid());
 	  assert(!is_end());
 	  return *cur;
 	}
 	auto operator->() {
+	  assert(is_valid());
 	  assert(!is_end());
 	  return &*cur;
 	}
@@ -228,18 +258,36 @@ struct transaction_manager_test_t :
 	  return ret;
 	}
       }
+
+      std::optional<iterator> get_left(const iterator &it) {
+        iterator left_it(it);
+        bool success = left_it.to_left();
+        if (success) {
+          auto ret = left_it;
+          assert(++left_it == it);
+          return ret;
+        } else {
+          assert(begin() == it);
+          return std::nullopt;
+        }
+      }
     };
+
   private:
     void check_available(
       laddr_t addr, extent_len_t len, const delta_t &delta
     ) const {
       delta_overlay_t overlay(*this, delta);
-      for (const auto &i: overlay) {
-	if (i.first < addr) {
-	  EXPECT_FALSE(i.first + i.second.desc.len > addr);
-	} else {
-	  EXPECT_FALSE(addr + len > i.first);
-	}
+      auto iter = overlay.lower_bound(addr);
+      if (iter != overlay.end()) {
+        assert(iter->first >= addr);
+        EXPECT_TRUE(iter->first >= addr + len);
+      }
+      auto maybe_left_it = overlay.get_left(iter);
+      if (maybe_left_it.has_value()) {
+        auto left_it = *maybe_left_it;
+        assert(left_it->first < addr);
+        EXPECT_TRUE(left_it->first + left_it->second.desc.len <= addr);
       }
     }
 
@@ -939,7 +987,7 @@ struct transaction_manager_test_t :
 
       epm->background_process
         .eviction_state
-        .init(stop_ratio, default_ratio, fast_ratio);
+        .init(stop_ratio, default_ratio, fast_ratio, epm->hot_tier_generations);
 
       // these variables are described in
       // EPM::BackgroundProcess::eviction_state_t::maybe_update_eviction_mode
@@ -992,7 +1040,7 @@ struct transaction_manager_test_t :
       assert(all_extent_types.size() == EXTENT_TYPES_MAX - 4);
 
       std::vector<rewrite_gen_t> all_generations;
-      for (auto i = INIT_GENERATION; i < REWRITE_GENERATIONS; i++) {
+      for (auto i = INIT_GENERATION; i <= epm->dynamic_max_rewrite_generation; i++) {
         all_generations.push_back(i);
       }
 
@@ -1015,7 +1063,7 @@ struct transaction_manager_test_t :
 	    expected_generations[t][INIT_GENERATION] = OOL_GENERATION;
 	  }
 
-          for (auto i = INIT_GENERATION + 1; i < REWRITE_GENERATIONS; i++) {
+          for (auto i = INIT_GENERATION + 1; i <= epm->dynamic_max_rewrite_generation; i++) {
 	    expected_generations[t][i] = i;
           }
         }
@@ -1026,7 +1074,7 @@ struct transaction_manager_test_t :
           if (is_root_type(t) || is_lba_backref_node(t)) {
             continue;
           }
-          for (auto i = INIT_GENERATION + 1; i < REWRITE_GENERATIONS; i++) {
+          for (auto i = INIT_GENERATION + 1; i <= epm->dynamic_max_rewrite_generation; i++) {
             expected_generations[t][i] = func(i);
           }
         }
@@ -1054,9 +1102,9 @@ struct transaction_manager_test_t :
       };
 
       // verify that no data should go to the cold tier
-      update_data_gen_mapping([](rewrite_gen_t gen) -> rewrite_gen_t {
-        if (gen == MIN_COLD_GENERATION) {
-          return MIN_COLD_GENERATION - 1;
+      update_data_gen_mapping([this](rewrite_gen_t gen) -> rewrite_gen_t {
+        if (gen == epm->hot_tier_generations) {
+          return epm->hot_tier_generations - 1;
         } else {
           return gen;
         }
@@ -1082,9 +1130,9 @@ struct transaction_manager_test_t :
 
       // verify that data must go to the cold tier
       run_until(ratio_D_size).get();
-      update_data_gen_mapping([](rewrite_gen_t gen) {
-        if (gen >= MIN_REWRITE_GENERATION && gen < MIN_COLD_GENERATION) {
-          return MIN_COLD_GENERATION;
+      update_data_gen_mapping([this](rewrite_gen_t gen) {
+        if (gen >= MIN_REWRITE_GENERATION && gen < epm->hot_tier_generations) {
+          return epm->hot_tier_generations;
         } else {
           return gen;
         }
@@ -1150,7 +1198,7 @@ struct transaction_manager_test_t :
 	test_mappings.alloced(pin->get_key(), *extent, t.mapping_delta);
 	EXPECT_TRUE(extent->is_exist_clean());
       } else {
-	EXPECT_TRUE(extent->is_stable_written());
+	EXPECT_TRUE(extent->is_stable_ready());
       }
     } else {
       ceph_assert(t.t->is_conflicted());

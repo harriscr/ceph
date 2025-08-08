@@ -1416,7 +1416,7 @@ bool pool_opts_t::unset(pool_opts_t::key_t key) {
   return opts.erase(key) > 0;
 }
 
-class pool_opts_dumper_t : public boost::static_visitor<> {
+class pool_opts_dumper_t {
 public:
   pool_opts_dumper_t(const std::string& name_, Formatter* f_) :
     name(name_.c_str()), f(f_) {}
@@ -1443,7 +1443,7 @@ void pool_opts_t::dump(const std::string& name, Formatter* f) const
   if (i == opts.end()) {
       return;
   }
-  boost::apply_visitor(pool_opts_dumper_t(name, f), i->second);
+  std::visit(pool_opts_dumper_t(name, f), i->second);
 }
 
 void pool_opts_t::dump(Formatter* f) const
@@ -1455,11 +1455,11 @@ void pool_opts_t::dump(Formatter* f) const
     if (j == opts.end()) {
       continue;
     }
-    boost::apply_visitor(pool_opts_dumper_t(name, f), j->second);
+    std::visit(pool_opts_dumper_t(name, f), j->second);
   }
 }
 
-class pool_opts_encoder_t : public boost::static_visitor<> {
+class pool_opts_encoder_t {
 public:
   explicit pool_opts_encoder_t(ceph::buffer::list& bl_, uint64_t features)
     : bl(bl_),
@@ -1498,7 +1498,7 @@ void pool_opts_t::encode(ceph::buffer::list& bl, uint64_t features) const
   encode(n, bl);
   for (auto i = opts.cbegin(); i != opts.cend(); ++i) {
     encode(static_cast<int32_t>(i->first), bl);
-    boost::apply_visitor(pool_opts_encoder_t(bl, features), i->second);
+    std::visit(pool_opts_encoder_t(bl, features), i->second);
   }
   ENCODE_FINISH(bl);
 }
@@ -5822,6 +5822,19 @@ void pg_hit_set_history_t::generate_test_instances(list<pg_hit_set_history_t*>& 
   ls.back()->history.push_back(pg_hit_set_info_t());
 }
 
+// -- GuardedMap --
+void OSDSuperblock::GuardedMap::encode(ceph::buffer::list &bl) const
+{
+  std::lock_guard lock(map_lock);
+  ::encode(maps, bl);
+}
+
+void OSDSuperblock::GuardedMap::decode(ceph::buffer::list::const_iterator &bl)
+{
+  std::lock_guard lock(map_lock);
+  ::decode(maps, bl);
+}
+
 // -- OSDSuperblock --
 
 void OSDSuperblock::encode(ceph::buffer::list &bl) const
@@ -5842,7 +5855,7 @@ void OSDSuperblock::encode(ceph::buffer::list &bl) const
   encode(purged_snaps_last, bl);
   encode(last_purged_snaps_scrub, bl);
   encode(cluster_osdmap_trim_lower_bound, bl);
-  encode(maps, bl);
+  mapc.encode(bl);
   ENCODE_FINISH(bl);
 }
 
@@ -5889,7 +5902,7 @@ void OSDSuperblock::decode(ceph::buffer::list::const_iterator &bl)
     cluster_osdmap_trim_lower_bound = 0;
   }
   if (struct_v >= 11) {
-    decode(maps, bl);
+    mapc.decode(bl);
   } else {
     insert_osdmap_epochs(oldest_map, newest_map);
   }
@@ -5912,7 +5925,7 @@ void OSDSuperblock::dump(Formatter *f) const
   f->dump_stream("last_purged_snaps_scrub") << last_purged_snaps_scrub;
   f->dump_int("cluster_osdmap_trim_lower_bound",
               cluster_osdmap_trim_lower_bound);
-  f->dump_stream("maps") << maps;
+  f->dump_stream("maps") << get_maps();
 }
 
 void OSDSuperblock::generate_test_instances(list<OSDSuperblock*>& o)
@@ -6662,6 +6675,8 @@ ostream& operator<<(ostream& out, const object_info_t& oi)
       << " " << oi.alloc_hint_flags << "]";
   if (oi.has_manifest())
     out << " " << oi.manifest;
+  if (!oi.shard_versions.empty())
+    out << " shard_versions=" << oi.shard_versions;
   out << ")";
   return out;
 }

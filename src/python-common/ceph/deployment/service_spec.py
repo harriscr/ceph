@@ -5,7 +5,13 @@ import enum
 from collections import OrderedDict
 from contextlib import contextmanager
 from functools import wraps
-from ipaddress import ip_network, ip_address, ip_interface
+from ipaddress import (
+    IPv4Network,
+    IPv6Network,
+    ip_address,
+    ip_interface,
+    ip_network,
+)
 from typing import (
     Any,
     Callable,
@@ -872,6 +878,7 @@ class ServiceSpec(object):
                  extra_container_args: Optional[GeneralArgList] = None,
                  extra_entrypoint_args: Optional[GeneralArgList] = None,
                  custom_configs: Optional[List[CustomConfig]] = None,
+                 ip_addrs: Optional[Dict[str, str]] = None,
                  ):
 
         #: See :ref:`orchestrator-cli-placement-spec`.
@@ -920,6 +927,10 @@ class ServiceSpec(object):
             self.extra_entrypoint_args = ArgumentSpec.from_general_args(
                 extra_entrypoint_args)
         self.custom_configs: Optional[List[CustomConfig]] = custom_configs
+
+        # ip_addrs is a dict where each key is a hostname and the corresponding value
+        # is the IP address {hostname: ip} that the NFS service should bind to on that host.
+        self.ip_addrs = ip_addrs
 
     def __setattr__(self, name: str, value: Any) -> None:
         if value is not None and name in ('extra_container_args', 'extra_entrypoint_args'):
@@ -1140,7 +1151,10 @@ class NFSServiceSpec(ServiceSpec):
                  preview_only: bool = False,
                  config: Optional[Dict[str, str]] = None,
                  networks: Optional[List[str]] = None,
+                 ip_addrs: Optional[Dict[str, str]] = None,
                  port: Optional[int] = None,
+                 monitoring_networks: Optional[List[str]] = None,
+                 monitoring_ip_addrs: Optional[Dict[str, str]] = None,
                  monitoring_port: Optional[int] = None,
                  virtual_ip: Optional[str] = None,
                  enable_nlm: bool = False,
@@ -1155,10 +1169,19 @@ class NFSServiceSpec(ServiceSpec):
             'nfs', service_id=service_id,
             placement=placement, unmanaged=unmanaged, preview_only=preview_only,
             config=config, networks=networks, extra_container_args=extra_container_args,
-            extra_entrypoint_args=extra_entrypoint_args, custom_configs=custom_configs)
+            extra_entrypoint_args=extra_entrypoint_args, custom_configs=custom_configs,
+            ip_addrs=ip_addrs)
 
         self.port = port
+
+        # monitoring_ip_addrs is a dictionary where each key is a hostname and the corresponding
+        # value is the IP address {hostname: ip} that the monitor should bind to on that host.
+        # monitoring_networks is a list of networks where the monitor is allowed to bind.
+        # user can pass one parameter to bind monitor on specific IP.
+        self.monitoring_ip_addrs = monitoring_ip_addrs
+        self.monitoring_networks = monitoring_networks
         self.monitoring_port = monitoring_port
+
         self.virtual_ip = virtual_ip
         self.enable_haproxy_protocol = enable_haproxy_protocol
         self.idmap_conf = idmap_conf
@@ -1172,6 +1195,13 @@ class NFSServiceSpec(ServiceSpec):
     def rados_config_name(self):
         # type: () -> str
         return 'conf-' + self.service_name()
+
+    def validate(self) -> None:
+        super(NFSServiceSpec, self).validate()
+
+        if self.virtual_ip and (self.ip_addrs or self.networks):
+            raise SpecValidationError("Invalid NFS spec: Cannot set virtual_ip and "
+                                      f"{'ip_addrs' if self.ip_addrs else 'networks'} fields")
 
 
 yaml.add_representer(NFSServiceSpec, ServiceSpec.yaml_representer)
@@ -1378,6 +1408,7 @@ class NvmeofServiceSpec(ServiceSpec):
                  enable_auth: bool = False,
                  state_update_notify: Optional[bool] = True,
                  state_update_interval_sec: Optional[int] = 5,
+                 break_update_interval_sec: Optional[int] = 25,
                  enable_spdk_discovery_controller: Optional[bool] = False,
                  encryption_key: Optional[str] = None,
                  rebalance_period_sec: Optional[int] = 7,
@@ -1393,6 +1424,8 @@ class NvmeofServiceSpec(ServiceSpec):
                  enable_prometheus_exporter: Optional[bool] = True,
                  prometheus_port: Optional[int] = 10008,
                  prometheus_stats_interval: Optional[int] = 10,
+                 prometheus_startup_delay: Optional[int] = 240,
+                 prometheus_connection_list_cache_expiration: Optional[int] = 60,
                  bdevs_per_cluster: Optional[int] = None,
                  flat_bdevs_per_cluster: Optional[int] = None,
                  cluster_connections: Optional[int] = None,
@@ -1406,9 +1439,11 @@ class NvmeofServiceSpec(ServiceSpec):
                  max_namespaces_with_netmask: Optional[int] = 1000,
                  max_subsystems: Optional[int] = 128,
                  max_hosts: Optional[int] = 2048,
-                 max_namespaces: Optional[int] = 2048,
-                 max_namespaces_per_subsystem: Optional[int] = 256,
+                 max_namespaces: Optional[int] = 4096,
+                 max_namespaces_per_subsystem: Optional[int] = 512,
                  max_hosts_per_subsystem: Optional[int] = 128,
+                 subsystem_cache_expiration: Optional[int] = 5,
+                 force_tls: Optional[bool] = False,
                  server_key: Optional[str] = None,
                  server_cert: Optional[str] = None,
                  client_key: Optional[str] = None,
@@ -1429,9 +1464,11 @@ class NvmeofServiceSpec(ServiceSpec):
                  transports: Optional[str] = 'tcp',
                  transport_tcp_options: Optional[Dict[str, int]] =
                  {"in_capsule_data_size": 8192, "max_io_qpairs_per_ctrlr": 7},
+                 enable_dsa_acceleration: bool = True,
                  tgt_cmd_extra_args: Optional[str] = None,
                  iobuf_options: Optional[Dict[str, int]] = None,
                  qos_timeslice_in_usecs: Optional[int] = 0,
+                 notifications_interval: Optional[int] = 60,
                  discovery_addr: Optional[str] = None,
                  discovery_addr_map: Optional[Dict[str, str]] = None,
                  discovery_port: Optional[int] = None,
@@ -1483,6 +1520,8 @@ class NvmeofServiceSpec(ServiceSpec):
         self.state_update_notify = state_update_notify
         #: ``state_update_interval_sec`` number of seconds to check for updates in OMAP
         self.state_update_interval_sec = state_update_interval_sec
+        #: ``break_update_interval_sec`` break updates longet than this interval to yield CPU
+        self.break_update_interval_sec = break_update_interval_sec
         #: ``enable_spdk_discovery_controller`` SPDK or ceph-nvmeof discovery service
         self.enable_spdk_discovery_controller = enable_spdk_discovery_controller
         #: ``encryption_key`` gateway encryption key
@@ -1499,6 +1538,11 @@ class NvmeofServiceSpec(ServiceSpec):
         self.prometheus_port = prometheus_port or 10008
         #: ``prometheus_stats_interval`` Prometheus get stats interval
         self.prometheus_stats_interval = prometheus_stats_interval
+        #: ``prometheus_startup_delay`` Prometheus startup delay, in seconds
+        self.prometheus_startup_delay = prometheus_startup_delay
+        #: ``prometheus_connection_list_cache_expiration`` Expiration time of connection list cache
+        self.prometheus_connection_list_cache_expiration = \
+            prometheus_connection_list_cache_expiration
         #: ``verify_nqns`` enables verification of subsystem and host NQNs for validity
         self.verify_nqns = verify_nqns
         #: ``verify_keys`` enables verification of PSJ and DHCHAP keys in the gateway
@@ -1533,6 +1577,10 @@ class NvmeofServiceSpec(ServiceSpec):
         self.max_namespaces_per_subsystem = max_namespaces_per_subsystem
         #: ``max_hosts_per_subsystem`` max number of hosts per subsystems
         self.max_hosts_per_subsystem = max_hosts_per_subsystem
+        #: ``subsystem_cache_expiration`` number of seconds before subsystems cache expires
+        self.subsystem_cache_expiration = subsystem_cache_expiration
+        #: ``force_tls`` force using TLS when adding hosts and listeners
+        self.force_tls = force_tls
         #: ``allowed_consecutive_spdk_ping_failures`` # of ping failures before aborting gateway
         self.allowed_consecutive_spdk_ping_failures = allowed_consecutive_spdk_ping_failures
         #: ``spdk_ping_interval_in_seconds`` sleep interval in seconds between SPDK pings
@@ -1591,12 +1639,16 @@ class NvmeofServiceSpec(ServiceSpec):
         self.transports = transports
         #: List of extra arguments for transports in the form opt=value
         self.transport_tcp_options: Optional[Dict[str, int]] = transport_tcp_options
+        #: ``enable_dsa_acceleration`` enable  dsa acceleration
+        self.enable_dsa_acceleration = enable_dsa_acceleration
         #: ``tgt_cmd_extra_args`` extra arguments for the nvmf_tgt process
         self.tgt_cmd_extra_args = tgt_cmd_extra_args
         #: List of extra arguments for SPDK iobuf in the form opt=value
         self.iobuf_options: Optional[Dict[str, int]] = iobuf_options
         #: ``qos_timeslice_in_usecs`` timeslice for QOS code, in micro seconds
         self.qos_timeslice_in_usecs = qos_timeslice_in_usecs
+        #: ``notifications_interval`` read SPDK notifications interval, in seconds
+        self.notifications_interval = notifications_interval
         #: ``discovery_addr`` address of the discovery service
         self.discovery_addr = discovery_addr
         #: ``discovery_addr_map`` per node address map of the discovery service
@@ -1691,6 +1743,7 @@ class NvmeofServiceSpec(ServiceSpec):
                     ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'NOTICE'])
         self.verify_spdk_ceph_connection_allocation()
         verify_non_negative_int(self.qos_timeslice_in_usecs, "QOS timeslice")
+        verify_non_negative_int(self.notifications_interval, "SPDK notifications interval")
 
         verify_non_negative_number(self.spdk_ping_interval_in_seconds, "SPDK ping interval")
         if (
@@ -1708,6 +1761,7 @@ class NvmeofServiceSpec(ServiceSpec):
             raise SpecValidationError("Allowed consecutive SPDK ping failures should be at least 1")
 
         verify_non_negative_int(self.state_update_interval_sec, "State update interval")
+        verify_non_negative_int(self.break_update_interval_sec, "Break long updates interval")
         verify_non_negative_int(self.rebalance_period_sec, "Rebalance period")
         verify_non_negative_int(self.max_gws_in_grp, "Max gateways in group")
         verify_non_negative_int(self.max_ns_to_change_lb_grp,
@@ -1731,6 +1785,9 @@ class NvmeofServiceSpec(ServiceSpec):
         verify_positive_int(self.max_namespaces, "Max namespaces")
         verify_positive_int(self.max_namespaces_per_subsystem, "Max namespaces per subsystem")
         verify_positive_int(self.max_hosts_per_subsystem, "Max hosts per subsystem")
+        verify_non_negative_number(self.subsystem_cache_expiration,
+                                   "Subsystem cache expiration period")
+        verify_boolean(self.force_tls, "Force TLS")
         verify_non_negative_number(self.monitor_timeout, "Monitor timeout")
         verify_non_negative_int(self.port, "Port")
         verify_non_negative_int(self.discovery_port, "Discovery port")
@@ -2479,14 +2536,14 @@ class AlertManagerSpec(MonitoringSpec):
         # service_type: alertmanager
         # service_id: xyz
         # user_data:
-        #   default_webhook_urls:
+        #   webhook_urls:
         #   - "https://foo"
         #   - "https://bar"
         #
         # Documentation:
-        # default_webhook_urls - A list of additional URL's that are
-        #                        added to the default receivers'
-        #                        <webhook_configs> configuration.
+        # webhook_urls - A list of additional URL's that are
+        #                added to the default receivers'
+        #                <webhook_configs> configuration.
         self.user_data = user_data or {}
         self.secure = secure
         self.only_bind_port_on_networks = only_bind_port_on_networks
@@ -3145,9 +3202,121 @@ class SMBClusterPublicIPSpec:
         return out
 
 
+class SMBClusterBindIPSpec:
+    """Control what IPs the SMB services will listen on, not including
+    dynamic IPs that are managed by CTDB.
+    """
+    def __init__(
+        self,
+        # single address
+        address: Optional[str] = None,
+        # >1 address specified as a network
+        network: Optional[str] = None,
+    ) -> None:
+        self.address = address
+        self.network = network
+        self._networks: List[Union[IPv4Network, IPv6Network]] = []
+        self.validate()
+
+    def validate(self) -> None:
+        if self.address and self.network:
+            raise SpecValidationError('only one of address or network may be given')
+        if not (self.address or self.network):
+            raise SpecValidationError('one of address or network is required')
+        if self.address:
+            # verify that address is an address
+            try:
+                ip_address(self.address)
+            except ValueError as err:
+                raise SpecValidationError(
+                    f'Cannot parse address {self.address}'
+                ) from err
+        # but we internallly store a list of networks
+        # this is slight bit of YAGNI violation, but I actually plan on
+        # adding IP ranges soon.
+        addr = self.network if self.network else self.address
+        try:
+            assert addr
+            self._networks = [ip_network(addr)]
+        except ValueError as err:
+            raise SpecValidationError(
+                f'Cannot parse network address {addr}'
+            ) from err
+
+    def as_networks(self) -> List[Union[IPv4Network, IPv6Network]]:
+        """Return a list of one or more IPv4 or IPv6 network objects."""
+        if not self._networks:
+            self.validate()
+        return self._networks
+
+    def as_network_strs(self) -> List[str]:
+        """Return a list of strings containing one or more network (<ip>/<mask>
+        style) values.
+        """
+        return [str(n) for n in self.as_networks()]
+
+    def __eq__(self, other: Any) -> bool:
+        try:
+            return (
+                other.address == self.address
+                and other.network == self.network
+            )
+        except AttributeError:
+            return NotImplemented
+
+    def __repr__(self) -> str:
+        if self.address:
+            return f'SMBClusterBindIPSpec(address={self.address!r})'
+        if self.network:
+            return f'SMBClusterBindIPSpec(network={self.network!r})'
+        raise ValueError('SMBClusterBindIPSpec missing address or network value')
+
+    def to_simplified(self) -> Dict[str, Any]:
+        """Return a serializable representation of SMBClusterBindIPSpec."""
+        if self.address:
+            return {'address': self.address}
+        if self.network:
+            return {'network': self.network}
+        raise ValueError('SMBClusterBindIPSpec missing address or network value')
+
+    def to_json(self) -> Dict[str, Any]:
+        """Return a JSON-compatible dict."""
+        return self.to_simplified()
+
+    @classmethod
+    def from_json(cls, spec: Dict[str, Any]) -> 'SMBClusterBindIPSpec':
+        """Convert value from a JSON-compatible dict."""
+        return cls(**spec)
+
+    @classmethod
+    def convert_list(
+        cls, arg: Optional[List[Any]]
+    ) -> Optional[List['SMBClusterBindIPSpec']]:
+        """Convert a list of values into a list of SMBClusterBindIPSpec objects.
+        Ignores None inputs returning None.
+        """
+        if arg is None:
+            return None
+        assert isinstance(arg, list)
+        out = []
+        for value in arg:
+            if isinstance(value, cls):
+                out.append(value)
+            elif hasattr(value, 'to_json'):
+                out.append(cls.from_json(value.to_json()))
+            elif isinstance(value, dict):
+                out.append(cls.from_json(value))
+            else:
+                raise SpecValidationError(
+                    f"Unknown type for SMBClusterBindIPSpec: {type(value)}"
+                )
+        return out
+
+
 class SMBSpec(ServiceSpec):
     service_type = 'smb'
     _valid_features = {'domain', 'clustered', 'cephfs-proxy'}
+    _valid_service_names = {'smb', 'smbmetrics', 'ctdb'}
     _default_cluster_meta_obj = 'cluster.meta.json'
     _default_cluster_lock_obj = 'cluster.meta.lock'
 
@@ -3203,6 +3372,10 @@ class SMBSpec(ServiceSpec):
         # If supplied, these will be used to esatablish floating virtual ips
         # managed by Samba CTDB cluster subsystem.
         cluster_public_addrs: Optional[List[SMBClusterPublicIPSpec]] = None,
+        # custom_ports - A mapping of services to ports. If a service is
+        # not listed the default port will be used.
+        custom_ports: Optional[Dict[str, int]] = None,
+        bind_addrs: Optional[List[SMBClusterBindIPSpec]] = None,
         # --- genearal tweaks ---
         extra_container_args: Optional[GeneralArgList] = None,
         extra_entrypoint_args: Optional[GeneralArgList] = None,
@@ -3235,6 +3408,8 @@ class SMBSpec(ServiceSpec):
         self.cluster_public_addrs = SMBClusterPublicIPSpec.convert_list(
             cluster_public_addrs
         )
+        self.custom_ports = custom_ports
+        self.bind_addrs = SMBClusterBindIPSpec.convert_list(bind_addrs)
         self.validate()
 
     def validate(self) -> None:
@@ -3270,6 +3445,9 @@ class SMBSpec(ServiceSpec):
             )
         for spec in self.cluster_public_addrs or []:
             spec.validate()
+        for key in self.custom_ports or {}:
+            if key not in self._valid_service_names:
+                raise ValueError(f'{key} is not a valid service name')
 
     def _derive_cluster_uri(self, uri: str, objname: str) -> str:
         if not uri.startswith('rados://'):
@@ -3279,15 +3457,40 @@ class SMBSpec(ServiceSpec):
         uri = 'rados://' + '/'.join(parts)
         return uri
 
+    def _default_ports(self) -> Dict[str, int]:
+        return {
+            'smb': 445,
+            'smbmetrics': 9922,
+            'ctdb': 4379,
+        }
+
+    def service_ports(self) -> Dict[str, int]:
+        ports = self._default_ports()
+        if self.custom_ports:
+            ports.update(self.custom_ports)
+        return ports
+
+    def metrics_exporter_port(self) -> int:
+        return self.service_ports()['smbmetrics']
+
     def get_port_start(self) -> List[int]:
-        ports = [445, 9922]  # SMB service runs on port 445 and smbmetrics uses 9922
+        _ports = self.service_ports()
+        ports = [_ports['smb'], _ports['smbmetrics']]
         if 'clustered' in self.features:
-            # ctdb uses port 4379
-            ports.append(4379)
+            ports.append(_ports['ctdb'])
         return ports
 
     def strict_cluster_ip_specs(self) -> List[Dict[str, Any]]:
         return [s.to_strict() for s in (self.cluster_public_addrs or [])]
+
+    def bind_networks(self) -> List[str]:
+        """Return a list of all networks (as an addr/mask) that this service is
+        permitted to bind to.
+        """
+        out = []
+        for ba in self.bind_addrs or []:
+            out.extend(ba.as_network_strs())
+        return out
 
     def to_json(self) -> "OrderedDict[str, Any]":
         obj = super().to_json()
@@ -3296,6 +3499,8 @@ class SMBSpec(ServiceSpec):
             spec['cluster_public_addrs'] = [
                 a.to_json() for a in spec['cluster_public_addrs']
             ]
+        if spec and spec.get('bind_addrs'):
+            spec['bind_addrs'] = [a.to_json() for a in spec['bind_addrs']]
         return obj
 
 

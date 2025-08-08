@@ -207,13 +207,13 @@ class DeltaRecorderT final: public DeltaRecorder {
         SUBERROR(seastore_onode,
             "got unknown op {} when replay {}",
             op, node);
-        ceph_abort("fatal error");
+        ceph_abort_msg("fatal error");
       }
     } catch (buffer::error& e) {
       SUBERROR(seastore_onode,
           "got decode error {} when replay {}",
           e.what(), node);
-      ceph_abort("fatal error");
+      ceph_abort_msg("fatal error");
     }
   }
 
@@ -245,7 +245,7 @@ class DeltaRecorderT final: public DeltaRecorder {
       // NODE_TYPE == node_type_t::LEAF
       value.encode(encoded);
     } else {
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
   }
 
@@ -259,7 +259,7 @@ class DeltaRecorderT final: public DeltaRecorder {
       // NODE_TYPE == node_type_t::LEAF
       return value_config_t::decode(delta);
     } else {
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
   }
 
@@ -306,6 +306,7 @@ class NodeExtentAccessorT {
       assert(p_recorder->field_type() == FIELD_TYPE);
       recorder = static_cast<recorder_t*>(p_recorder);
     } else if (extent->is_stable()) {
+      assert(extent->is_stable_ready());
       state = nextent_state_t::READ_ONLY;
       // mut is empty
       assert(extent->get_recorder() == nullptr ||
@@ -313,7 +314,7 @@ class NodeExtentAccessorT {
       recorder = nullptr;
     } else {
       // extent is invalid or retired
-      ceph_abort("impossible path");
+      ceph_abort_msg("impossible path");
     }
 #ifndef NDEBUG
     auto ref_recorder = recorder_t::create_for_replay();
@@ -356,6 +357,7 @@ class NodeExtentAccessorT {
     assert(!is_retired());
     if (state == nextent_state_t::READ_ONLY) {
       assert(extent->is_stable());
+      assert(extent->is_stable_ready());
       auto ref_recorder = recorder_t::create_for_encode(c.vb);
       recorder = static_cast<recorder_t*>(ref_recorder.get());
       extent = extent->mutate(c, std::move(ref_recorder));

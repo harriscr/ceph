@@ -7,6 +7,7 @@ port = {{ spec.port }}
 enable_auth = {{ spec.enable_auth }}
 state_update_notify = {{ spec.state_update_notify }}
 state_update_interval_sec = {{ spec.state_update_interval_sec }}
+break_update_interval_sec = {{ spec.break_update_interval_sec }}
 enable_spdk_discovery_controller = {{ spec.enable_spdk_discovery_controller }}
 encryption_key = /encryption.key
 rebalance_period_sec = {{ spec.rebalance_period_sec }}
@@ -16,6 +17,8 @@ enable_prometheus_exporter = {{ spec.enable_prometheus_exporter }}
 prometheus_exporter_ssl = False
 prometheus_port = {{ spec.prometheus_port }}
 prometheus_stats_interval = {{ spec.prometheus_stats_interval }}
+prometheus_startup_delay = {{ spec.prometheus_startup_delay }}
+prometheus_connection_list_cache_expiration = {{ spec.prometheus_connection_list_cache_expiration }}
 verify_nqns = {{ spec.verify_nqns }}
 verify_keys = {{ spec.verify_keys }}
 verify_listener_ip = {{ spec.verify_listener_ip }}
@@ -40,6 +43,8 @@ max_hosts = {{ spec.max_hosts }}
 max_namespaces = {{ spec.max_namespaces }}
 max_namespaces_per_subsystem = {{ spec.max_namespaces_per_subsystem }}
 max_hosts_per_subsystem = {{ spec.max_hosts_per_subsystem }}
+subsystem_cache_expiration = {{ spec.subsystem_cache_expiration }}
+force_tls = {{ spec.force_tls }}
 
 [gateway-logs]
 log_level = {{ spec.log_level }}
@@ -104,6 +109,7 @@ transports = {{ spec.transports }}
 {% if transport_tcp_options %}
 transport_tcp_options = {{ transport_tcp_options }}
 {% endif %}
+enable_dsa_acceleration = {{ spec.enable_dsa_acceleration }}
 {% if spec.tgt_cmd_extra_args %}
 tgt_cmd_extra_args = {{ spec.tgt_cmd_extra_args }}
 {% endif %}
@@ -111,6 +117,7 @@ tgt_cmd_extra_args = {{ spec.tgt_cmd_extra_args }}
 iobuf_options = {{ iobuf_options }}
 {% endif %}
 qos_timeslice_in_usecs = {{ spec.qos_timeslice_in_usecs }}
+notifications_interval = {{ spec.notifications_interval }}
 
 [monitor]
 timeout = {{ spec.monitor_timeout }}

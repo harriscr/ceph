@@ -41,7 +41,6 @@ Make sure X (and, ideally, X+1) is defined:
 Scripts
 ~~~~~~~
 
-- [x] src/script/backport-resolve-issue (`releases()`, `ver_to_release()`)
 - [x] src/script/backport-create-issue (`releases()`)
 - [x] src/script/ceph-release-notes (up to X)
 
@@ -127,6 +126,7 @@ After dev freeze
 ================
 
 - [ ] create branch for new release
+- [ ] open the Branch Protection settings of the Ceph repo.  Duplicate settings to the new release branch.
 - [ ] create vX.3.0 annotated tag on ``main`` so upgrades from new release to main are not wrongly considered downgrades.
 - [ ] remove ``doc/releases/*.rst``. This should leave behind ``doc/releases/releases.yml`` which is used for doc building purposes. See also commit 33d63c3 ("doc: remove release notes for release branch") for details.
 - [ ] cherry-pick 8cf9ad62949516666ad0f2c0bb7726ef68e4d666 ("doc: add releases links to toc"). There will be trivial conflicts.

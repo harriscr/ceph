@@ -15,7 +15,7 @@ class CliHeader:
 
 
 class GatewayInfo(NamedTuple):
-    bool_status: bool
+    bool_status: Annotated[bool, CliFlags.DROP]
     status: int
     error_message: str
     hostname: str
@@ -26,11 +26,11 @@ class GatewayInfo(NamedTuple):
     addr: str
     port: int
     load_balancing_group: Annotated[int, CliHeader('LB Group')]
-    max_hosts: int
-    max_hosts_per_subsystem: int
-    max_namespaces: int
-    max_namespaces_per_subsystem: int
-    max_subsystems: int
+    max_hosts: Annotated[int, CliFlags.DROP]
+    max_hosts_per_subsystem: Annotated[int, CliFlags.DROP]
+    max_namespaces: Annotated[int, CliFlags.DROP]
+    max_namespaces_per_subsystem: Annotated[int, CliFlags.DROP]
+    max_subsystems: Annotated[int, CliFlags.DROP]
     spdk_version: Optional[str] = ""
 
 
@@ -94,6 +94,10 @@ class Connection(NamedTuple):
     connected: bool
     qpairs_count: int
     controller_id: int
+    use_psk: Optional[bool]
+    use_dhchap: Optional[bool]
+    subsystem: Optional[str]
+    disconnected_due_to_keepalive_timeout: Optional[bool]
 
 
 class ConnectionList(NamedTuple):
@@ -126,6 +130,8 @@ class Namespace(NamedTuple):
     uuid: Optional[str]
     ns_subsystem_nqn: Optional[str]
     trash_image: Optional[bool]
+    disable_auto_resize: Optional[bool]
+    read_only: Optional[bool]
 
 
 class NamespaceList(NamedTuple):
@@ -183,6 +189,7 @@ class Host(NamedTuple):
     nqn: str
     use_psk: Optional[bool]
     use_dhchap: Optional[bool]
+    disconnected_due_to_keepalive_timeout: Annotated[Optional[bool], CliFlags.DROP]
 
 
 class HostsInfo(NamedTuple):
@@ -190,7 +197,7 @@ class HostsInfo(NamedTuple):
     error_message: str
     allow_any_host: bool
     subsystem_nqn: str
-    hosts: List[Host]
+    hosts: Annotated[List[Host], CliFlags.EXCLUSIVE_LIST]
 
 
 class RequestStatus(NamedTuple):

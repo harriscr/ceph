@@ -63,12 +63,6 @@ static ostream &_prefix(std::ostream *_dout,
 }
 
 static ostream &_prefix(std::ostream *_dout,
-                        ECCommon::UnstableHashInfoRegistry *
-                        unstable_hash_info_registry) {
-  return *_dout;
-}
-
-static ostream &_prefix(std::ostream *_dout,
                         struct ClientReadCompleter const *read_completer
   );
 
@@ -161,8 +155,9 @@ void ECCommon::ReadPipeline::get_all_avail_shards(
 
   if (for_recovery) {
     for (auto &&pg_shard: get_parent()->get_backfill_shards()) {
-      if (error_shards && error_shards->contains(pg_shard))
+      if (error_shards && error_shards->contains(pg_shard)) {
         continue;
+      }
       const shard_id_t &shard = pg_shard.shard;
       if (have.contains(shard)) {
         ceph_assert(shards.contains(shard));
@@ -225,8 +220,23 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
 
   read_request.shard_want_to_read.populate_shard_id_set(want);
 
-  int r = ec_impl->minimum_to_decode(want, have, need_set,
+  int r = 0;
+  auto kth_iter = want.find_nth(sinfo.get_k());
+  if (kth_iter != want.end()) {
+    // If we support partial reads, we are making the assumption that only
+    // K shards need to be read to recover data.  We opt here for minimising
+    // the number of reads over minimising the amount of parity calculations
+    // that are needed.
+    shard_id_set want_for_plugin = want;
+    shard_id_t kth = *kth_iter;
+    want_for_plugin.erase_range(kth, sinfo.get_k_plus_m() - (int)kth);
+    r = ec_impl->minimum_to_decode(want_for_plugin, have, need_set,
                                      need_sub_chunks.get());
+  } else {
+    r = ec_impl->minimum_to_decode(want, have, need_set,
+                                     need_sub_chunks.get());
+  }
+
   if (r < 0) {
     dout(20) << "minimum_to_decode_failed r: " << r << "want: " << want
       << " have: " << have << " need: " << need_set << dendl;
@@ -241,9 +251,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
         (*need_sub_chunks)[i] = subchunks_list;
       }
     }
-    for (auto &&i: have) {
-      need_set.insert(i);
-    }
+    need_set.insert(have);
   }
 
   extent_set extra_extents;
@@ -281,7 +289,7 @@ int ECCommon::ReadPipeline::get_min_avail_to_read_shards(
       extents.union_of(read_request.shard_want_to_read.at(shard));
     }
 
-    extents.align(CEPH_PAGE_SIZE);
+    extents.align(EC_ALIGN_SIZE);
     if (read_mask.contains(shard)) {
       shard_read.extents.intersection_of(extents, read_mask.at(shard));
     }
@@ -471,6 +479,44 @@ void ECCommon::ReadPipeline::get_want_to_read_shards(
   }
 }
 
+void ECCommon::ReadPipeline::get_want_to_read_all_shards(
+    const list<ec_align_t> &to_read,
+    ECUtil::shard_extent_set_t &want_shard_reads)
+{
+  for (const auto &single_region: to_read) {
+    sinfo.ro_range_to_shard_extent_set_with_parity(single_region.offset,
+                                                   single_region.size,
+                                                   want_shard_reads);
+  }
+  dout(20) << __func__ << ": to_read " << to_read
+  << " read_request " << want_shard_reads << dendl;
+}
+
+/**
+ * Create a buffer containing both the ordered data and parity shards
+ *
+ * @param buffers_read shard_extent_map_t of shard indexes and their corresponding extent maps
+ * @param read ec_align_t Read size and offset for rados object
+ * @param outbl Pointer to output buffer
+ */
+void ECCommon::ReadPipeline::create_parity_read_buffer(
+  ECUtil::shard_extent_map_t buffers_read,
+  ec_align_t read,
+  bufferlist *outbl)
+{
+  bufferlist data, parity;
+  data = buffers_read.get_ro_buffer(read.offset, read.size);
+
+  for (raw_shard_id_t raw_shard(sinfo.get_k());
+       raw_shard < sinfo.get_k_plus_m(); ++raw_shard) {
+    shard_id_t shard = sinfo.get_shard(raw_shard);
+    buffers_read.get_shard_first_buffer(shard, parity);
+  }
+
+  outbl->append(data);
+  outbl->append(parity);
+}
+
 struct ClientReadCompleter final : ECCommon::ReadCompleter {
   ClientReadCompleter(ECCommon::ReadPipeline &read_pipeline,
                       ECCommon::ClientAsyncReadStatus *status
@@ -488,22 +534,31 @@ struct ClientReadCompleter final : ECCommon::ReadCompleter {
     extent_map result;
     if (res.r == 0) {
       ceph_assert(res.errors.empty());
-#if DEBUG_EC_BUFFERS
-      dout(20) << __func__ << ": before decode: " << res.buffers_read.debug_string(2048, 8) << dendl;
-#endif
+      dout(30) << __func__ << ": before decode: "
+               << res.buffers_read.debug_string(2048, 8)
+               << dendl;
       /* Decode any missing buffers */
       int r = res.buffers_read.decode(read_pipeline.ec_impl,
                                   req.shard_want_to_read,
-                                  req.object_size);
+                                  req.object_size,
+                                  read_pipeline.get_parent()->get_dpp());
       ceph_assert( r == 0 );
-
-#if DEBUG_EC_BUFFERS
-      dout(20) << __func__ << ": after decode: " << res.buffers_read.debug_string(2048, 8) << dendl;
-#endif
+      dout(30) << __func__ << ": after decode: "
+               << res.buffers_read.debug_string(2048, 8)
+               << dendl;
 
       for (auto &&read: req.to_read) {
-        result.insert(read.offset, read.size,
-                      res.buffers_read.get_ro_buffer(read.offset, read.size));
+        // Return a buffer containing both data and parity
+        // if the parity read inject is set
+        if (cct->_conf->bluestore_debug_inject_read_err &&
+            ECInject::test_parity_read(hoid)) {
+          bufferlist data_and_parity;
+          read_pipeline.create_parity_read_buffer(res.buffers_read, read, &data_and_parity);
+          result.insert(read.offset, data_and_parity.length(), data_and_parity);
+        } else {
+          result.insert(read.offset, read.size,
+                        res.buffers_read.get_ro_buffer(read.offset, read.size));
+        }
       }
     }
     dout(20) << __func__ << " calling complete_object with result="
@@ -540,7 +595,13 @@ void ECCommon::ReadPipeline::objects_read_and_reconstruct(
   map<hobject_t, read_request_t> for_read_op;
   for (auto &&[hoid, to_read]: reads) {
     ECUtil::shard_extent_set_t want_shard_reads(sinfo.get_k_plus_m());
-    get_want_to_read_shards(to_read, want_shard_reads);
+    if (cct->_conf->bluestore_debug_inject_read_err &&
+        ECInject::test_parity_read(hoid)) {
+      get_want_to_read_all_shards(to_read, want_shard_reads);
+    }
+    else {
+      get_want_to_read_shards(to_read, want_shard_reads);
+    }
 
     read_request_t read_request(to_read, want_shard_reads, false, object_size);
     const int r = get_min_avail_to_read_shards(
@@ -617,7 +678,7 @@ int ECCommon::ReadPipeline::send_all_remaining_reads(
   // reset the old shard reads, we are going to read them again.
   read_request.shard_reads.clear();
   return get_remaining_shards(hoid, rop.complete.at(hoid), read_request,
-                              rop.do_redundant_reads, want_attrs);
+                              rop.for_recovery, want_attrs);
 }
 
 void ECCommon::ReadPipeline::kick_reads() {
@@ -696,16 +757,6 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
 
   dout(20) << __func__ << ": written: " << written << ", op: " << op << dendl;
 
-  if (!sinfo.supports_ec_overwrites()) {
-    for (auto &&i: op.log_entries) {
-      if (i.requires_kraken()) {
-        derr << __func__ << ": log entry " << i << " requires kraken"
-             << " but overwrites are not enabled!" << dendl;
-        ceph_abort();
-      }
-    }
-  }
-
   ObjectStore::Transaction empty;
   bool should_write_local = false;
   ECSubWrite local_write_op;
@@ -725,6 +776,8 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
     if (transaction.empty()) {
       dout(20) << __func__ << " Transaction for osd." << pg_shard.osd << " shard " << shard << " is empty" << dendl;
     } else {
+      // NOTE: All code between dout and dendl is executed conditionally on
+      //       debug level.
       dout(20) << __func__ << " Transaction for osd." << pg_shard.osd << " shard " << shard << " contents ";
       Formatter *f = Formatter::create("json");
       f->open_object_section("t");
@@ -734,14 +787,20 @@ void ECCommon::RMWPipeline::cache_ready(Op &op) {
       delete f;
       *_dout << dendl;
     }
-    if (op.skip_transaction(pending_roll_forward, shard, transaction)) {
+    bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
+    /* should_send being false indicates that a recovery is going on to this
+     * object this makes it critical that the log on the non-primary shards is
+     * complete:- We may need to update "missing" with the latest version.
+     * As such we must never skip a transaction completely.  Note that if
+     * should_send is false, then an empty transaction is sent.
+     */
+    if (should_send && op.skip_transaction(pending_roll_forward, shard, transaction)) {
       // Must be an empty transaction
       ceph_assert(transaction.empty());
-      dout(20) << __func__ << " Skipping transaction for osd." << shard << dendl;
+      dout(20) << __func__ << " Skipping transaction for shard " << shard << dendl;
       continue;
     }
     op.pending_commits++;
-    bool should_send = get_parent()->should_send_op(pg_shard, op.hoid);
     const pg_stat_t &stats =
         (should_send || !backfill_shards.contains(pg_shard))
           ? get_info().stats
@@ -822,7 +881,7 @@ struct ECDummyOp final : ECCommon::RMWPipeline::Op {
       DoutPrefixProvider *dpp,
       const OSDMapRef &osdmap
     ) override {
-    // NOP, as -- in constrast to ECClassicalOp -- there is no
+    // NOP, as -- in contrast to ECClassicalOp -- there is no
     // transaction involved
   }
 
@@ -867,10 +926,7 @@ void ECCommon::RMWPipeline::finish_rmw(OpRef const &op) {
 
   if (extent_cache.idle()) {
     if (op->version > get_parent()->get_log().get_can_rollback_to()) {
-      const int transactions_since_last_idle = extent_cache.
-          get_and_reset_counter();
-      dout(20) << __func__ << " version=" << op->version << " ec_counter=" <<
-          transactions_since_last_idle << dendl;
+      dout(20) << __func__ << " cache idle " << op->version << dendl;
       // submit a dummy, transaction-empty op to kick the rollforward
       const auto tid = get_parent()->get_tid();
       const auto nop = std::make_shared<ECDummyOp>();
@@ -911,52 +967,4 @@ void ECCommon::RMWPipeline::on_change2() {
 
 void ECCommon::RMWPipeline::call_write_ordered(std::function<void(void)> &&cb) {
   extent_cache.add_on_write(std::move(cb));
-}
-
-ECUtil::HashInfoRef ECCommon::UnstableHashInfoRegistry::maybe_put_hash_info(
-    const hobject_t &hoid,
-    ECUtil::HashInfo &&hinfo) {
-  return registry.lookup_or_create(hoid, hinfo);
-}
-
-ECUtil::HashInfoRef ECCommon::UnstableHashInfoRegistry::get_hash_info(
-    const hobject_t &hoid,
-    bool create,
-    const map<string, bufferlist, less<>> &attrs,
-    uint64_t size) {
-  dout(10) << __func__ << ": Getting attr on " << hoid << dendl;
-  auto ref = registry.lookup(hoid);
-  if (!ref) {
-    dout(10) << __func__ << ": not in cache " << hoid << dendl;
-    ECUtil::HashInfo hinfo(ec_impl->get_chunk_count());
-    bufferlist bl;
-    if (attrs.contains(ECUtil::get_hinfo_key())) {
-      bl = attrs.at(ECUtil::get_hinfo_key());
-    } else {
-      dout(30) << __func__ << " " << hoid << " missing hinfo attr" << dendl;
-    }
-    if (bl.length() > 0) {
-      auto bp = bl.cbegin();
-      try {
-        decode(hinfo, bp);
-      }
-      catch (...) {
-        dout(0) << __func__ << ": Can't decode hinfo for " << hoid << dendl;
-        return ECUtil::HashInfoRef();
-      }
-      if (hinfo.get_total_chunk_size() != size) {
-        dout(0) << __func__ << ": Mismatch of total_chunk_size "
-      		       << hinfo.get_total_chunk_size() << dendl;
-        return ECUtil::HashInfoRef();
-      }
-      create = true;
-    } else if (size == 0) {
-      // If empty object and no hinfo, create it
-      create = true;
-    }
-    if (create) {
-      ref = registry.lookup_or_create(hoid, hinfo);
-    }
-  }
-  return ref;
 }

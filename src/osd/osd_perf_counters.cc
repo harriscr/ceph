@@ -246,6 +246,12 @@ PerfCounters *build_osd_logger(CephContext *cct) {
   osd_plb.add_u64(
     l_osd_hb_to, "heartbeat_to_peers", "Heartbeat (ping) peers we send to");
   osd_plb.add_u64_counter(l_osd_map, "map_messages", "OSD map messages");
+  osd_plb.add_u64_counter(
+    l_osd_full_map_received, "full_map_received",
+    "number of full OSD map recieved via MOSDMap");
+  osd_plb.add_u64_counter(
+    l_osd_inc_map_received, "inc_map_received",
+    "number of incremental OSD map recieved via MOSDMap");
   osd_plb.add_u64_counter(l_osd_mape, "map_message_epochs", "OSD map epochs");
   osd_plb.add_u64_counter(
     l_osd_mape_dup, "map_message_epoch_dups", "OSD map duplicates");
@@ -334,6 +340,9 @@ PerfCounters *build_osd_logger(CephContext *cct) {
     "PG updated its info using fastinfo attr");
   osd_plb.add_u64_counter(
     l_osd_pg_biginfo, "osd_pg_biginfo", "PG updated its biginfo attr");
+
+  // back to "interesting" counters
+  osd_plb.set_prio_default(PerfCountersBuilder::PRIO_INTERESTING);
 
   /// scrub's replicas reservation time/#replicas histogram
   PerfHistogramCommon::axis_config_d rsrv_hist_x_axis_config{
@@ -448,7 +457,7 @@ PerfCounters *build_osd_logger(CephContext *cct) {
       l_osd_scrub_ec_failed_elapsed, "failed_scrubs_ec_elapsed",
       "time to scrub failure ec");
 
-  // the replica reservation process - EC
+  // the secondaries reservation process - EC
   osd_plb.add_u64_counter(
       l_osd_scrub_ec_reserv_success, "scrub_ec_reservations_completed",
       "successfully completed reservation processes EC");

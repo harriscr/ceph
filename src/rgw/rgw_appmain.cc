@@ -234,6 +234,10 @@ int rgw::AppMain::init_storage()
     (g_conf()->rgw_enable_lc_threads &&
       ((!nfs) || (nfs && g_conf()->rgw_nfs_run_lc_threads)));
 
+  auto run_restore =
+    (g_conf()->rgw_enable_restore_threads &&
+      ((!nfs) || (nfs && g_conf()->rgw_nfs_run_restore_threads)));
+
   auto run_quota =
     (g_conf()->rgw_enable_quota_threads &&
       ((!nfs) || (nfs && g_conf()->rgw_nfs_run_quota_threads)));
@@ -250,6 +254,7 @@ int rgw::AppMain::init_storage()
 	  site,
           run_gc,
           run_lc,
+	  run_restore,
           run_quota,
           run_sync,
           g_conf().get_val<bool>("rgw_dynamic_resharding"),
@@ -521,28 +526,33 @@ int rgw::AppMain::init_frontends2(RGWLib* rgwlib)
     /* ignore error */
   }
 
-  // if we're part of a realm, add a watcher to respond to configuration changes
-  if (const auto& realm = env.site->get_realm(); realm) {
-    realm_watcher = env.cfgstore->create_realm_watcher(dpp, null_yield, *realm);
-  }
-  if (realm_watcher) {
-    pusher = std::make_unique<RGWPeriodPusher>(dpp, env.driver, env.cfgstore, null_yield);
-    realm_watcher->add_watcher(RGWRealmNotify::ZonesNeedPeriod, *pusher);
-
-    fe_pauser = std::make_unique<RGWFrontendPauser>(fes, pusher.get());
-    rgw_pauser = std::make_unique<RGWPauser>();
-    rgw_pauser->add_pauser(fe_pauser.get());
-    if (env.lua.background) {
-      rgw_pauser->add_pauser(env.lua.background);
+#ifdef WITH_RADOSGW_RADOS
+  if (env.driver->get_name() == "rados") {
+    // add a watcher to respond to realm configuration changes
+    // if we're part of a realm, add a watcher to respond to configuration changes
+    if (const auto& realm = env.site->get_realm(); realm) {
+      realm_watcher = env.cfgstore->create_realm_watcher(dpp, null_yield, *realm);
     }
+    if (realm_watcher) {
+      pusher = std::make_unique<RGWPeriodPusher>(dpp, env.driver, env.cfgstore, null_yield);
+      realm_watcher->add_watcher(RGWRealmNotify::ZonesNeedPeriod, *pusher);
+
+      fe_pauser = std::make_unique<RGWFrontendPauser>(fes, pusher.get());
+      rgw_pauser = std::make_unique<RGWPauser>();
+      rgw_pauser->add_pauser(fe_pauser.get());
+      if (env.lua.background) {
+        rgw_pauser->add_pauser(env.lua.background);
+      }
     if (dedup_background) {
       rgw_pauser->add_pauser(dedup_background.get());
     }
-    need_context_pool();
-    reloader = std::make_unique<RGWRealmReloader>(
-        env, *implicit_tenant_context, service_map_meta, rgw_pauser.get(), *context_pool);
-    realm_watcher->add_watcher(RGWRealmNotify::Reload, *reloader);
+      need_context_pool();
+      reloader = std::make_unique<RGWRealmReloader>(
+          env, *implicit_tenant_context, service_map_meta, rgw_pauser.get(), *context_pool);
+      realm_watcher->add_watcher(RGWRealmNotify::Reload, *reloader);
+    }
   }
+#endif
 
   return r;
 } /* init_frontends2 */
@@ -576,13 +586,15 @@ void rgw::AppMain::init_lua()
 #endif
 
   env.lua.manager = env.driver->get_lua_manager(install_dir);
+#ifdef WITH_RADOSGW_RADOS
   if (driver->get_name() == "rados") { /* Supported for only RadosStore */
     lua_background = std::make_unique<
-      rgw::lua::Background>(driver, dpp->get_cct(), env.lua.manager.get());
+      rgw::lua::Background>(dpp->get_cct(), env.lua.manager.get());
     lua_background->start();
     env.lua.background = lua_background.get();
     static_cast<rgw::sal::RadosLuaManager*>(env.lua.manager.get())->watch_reload(dpp);
   }
+#endif
 } /* init_lua */
 
 void rgw::AppMain::init_dedup()
@@ -608,7 +620,7 @@ void rgw::AppMain::shutdown(std::function<void(void)> finalize_async_signals)
   realm_watcher.reset();
   pusher.reset();
   reloader.reset();
-
+#ifdef WITH_RADOSGW_RADOS
   if (env.driver->get_name() == "rados") {
     if (g_conf().get_val<bool>("rgw_lua_enable"))
       static_cast<rgw::sal::RadosLuaManager*>(env.lua.manager.get())->
@@ -618,6 +630,7 @@ void rgw::AppMain::shutdown(std::function<void(void)> finalize_async_signals)
       dedup_background->unwatch_reload(dpp);
     }
   }
+#endif
 
   for (auto& fe : fes) {
     fe->stop();

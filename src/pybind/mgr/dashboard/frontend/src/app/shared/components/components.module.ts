@@ -36,9 +36,13 @@ import {
   SelectModule,
   ComboBoxModule,
   ProgressIndicatorModule,
-  PanelModule
+  PanelModule,
+  LayoutModule,
+  TilesModule,
+  PopoverModule
 } from 'carbon-components-angular';
-
+import EditIcon from '@carbon/icons/es/edit/20';
+import CodeIcon from '@carbon/icons/es/code/16';
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
 import { DirectivesModule } from '../directives/directives.module';
 import { PipesModule } from '../pipes/pipes.module';
@@ -82,10 +86,17 @@ import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-adv
 import { UpgradableComponent } from './upgradable/upgradable.component';
 import { ProgressComponent } from './progress/progress.component';
 import { SidePanelComponent } from './side-panel/side-panel.component';
+import { ChartsModule } from '@carbon/charts-angular';
+import { InlineMessageComponent } from './inline-message/inline-message.component';
+import { IconComponent } from './icon/icon.component';
+import { DetailsCardComponent } from './details-card/details-card.component';
 
 // Icons
 import InfoIcon from '@carbon/icons/es/information/16';
 import CopyIcon from '@carbon/icons/es/copy/32';
+import downloadIcon from '@carbon/icons/es/download/16';
+import IdeaIcon from '@carbon/icons/es/idea/20';
+import CloseIcon from '@carbon/icons/es/close/16';
 
 @NgModule({
   imports: [
@@ -125,7 +136,11 @@ import CopyIcon from '@carbon/icons/es/copy/32';
     ComboBoxModule,
     ProgressIndicatorModule,
     BaseChartDirective,
-    PanelModule
+    PanelModule,
+    ChartsModule,
+    LayoutModule,
+    TilesModule,
+    PopoverModule
   ],
   declarations: [
     SparklineComponent,
@@ -168,7 +183,10 @@ import CopyIcon from '@carbon/icons/es/copy/32';
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
     ProgressComponent,
-    SidePanelComponent
+    SidePanelComponent,
+    IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent
   ],
   providers: [provideCharts(withDefaultRegisterables())],
   exports: [
@@ -208,11 +226,22 @@ import CopyIcon from '@carbon/icons/es/copy/32';
     FormAdvancedFieldsetComponent,
     UpgradableComponent,
     ProgressComponent,
-    SidePanelComponent
+    SidePanelComponent,
+    IconComponent,
+    InlineMessageComponent,
+    DetailsCardComponent
   ]
 })
 export class ComponentsModule {
   constructor(private iconService: IconService) {
-    this.iconService.registerAll([InfoIcon, CopyIcon]);
+    this.iconService.registerAll([
+      InfoIcon,
+      CopyIcon,
+      EditIcon,
+      CodeIcon,
+      downloadIcon,
+      IdeaIcon,
+      CloseIcon
+    ]);
   }
 }
