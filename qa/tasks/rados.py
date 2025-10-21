@@ -180,11 +180,9 @@ def task(ctx, config):
         "adjust-ulimits",
         "ceph-coverage",
         "{tdir}/archive/coverage".format(tdir=testdir),
-        "daemon-helper",
-        "kill",
+        "stdin-killer",  # the default signal for stdin-killer is SIGKILL, which is what we want
         "ceph_test_rados",
     ]
-
     if config.get("ec_pool", False):
         args.extend(["--no-omap"])
         if not config.get("erasure_code_use_overwrites", False):
