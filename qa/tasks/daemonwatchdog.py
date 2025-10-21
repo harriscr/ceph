@@ -114,8 +114,8 @@ class DaemonWatchdog(Greenlet):
 
         for proc in self.watched_processes:
             self.log("Killing remote process %s" % proc.id)
-            proc.set_exception(BarkError(reason))
             proc.stop()
+            proc.set_exception(BarkError(reason))
 
     def watch(self):
         self.log("watchdog starting")
