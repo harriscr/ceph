@@ -80,7 +80,8 @@ fi
 
 if test -z "$cbt_dir"; then
     cbt_dir=$PWD/cbt
-    git clone --depth 1 -b master https://github.com/ceph/cbt.git $cbt_dir
+    git clone --depth 1 -b wip_ch_resource_classes:wq
+     https://github.com/harriscr/cbt.git $cbt_dir
 fi
 
 # store absolute path before changing cwd
