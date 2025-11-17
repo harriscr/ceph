@@ -80,7 +80,7 @@ fi
 
 if test -z "$cbt_dir"; then
     cbt_dir=$PWD/cbt
-    git clone --depth 1 -b wip_ch_resource_classes:wq
+    git clone --depth 1 -b wip_ch_resource_classes
      https://github.com/harriscr/cbt.git $cbt_dir
 fi
 
